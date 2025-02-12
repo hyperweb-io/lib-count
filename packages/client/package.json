@@ -1,6 +1,6 @@
 {
   "name": "@cosmology/db-client",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "author": "Hyperweb <developers@hyperweb.io>",
   "description": "db-client",
   "main": "index.js",
