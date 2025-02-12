@@ -1,7 +1,12 @@
 process.env.DATABASE_URL = 'postgres://postgres:password@localhost:5432/postgres';
 import { PoolClient } from 'pg';
 
-import { client } from '../src';
+import { Database } from '../src';
+let client: Database;
+
+beforeAll(() => {
+  client = new Database();
+})
 
 afterAll(() => {
   client.shutdown();
