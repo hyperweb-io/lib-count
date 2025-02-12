@@ -1,22 +1,30 @@
-import { Database } from '@cosmology/db-client';
-import { PoolClient } from 'pg';
+import { Database } from "@cosmology/db-client";
+import { PoolClient } from "pg";
+import { insertNpmDownloadCount, getDownloadsByPackage } from "./queries";
 
 const main = async () => {
   const db = new Database();
-  db.withTransaction(async (client: PoolClient) => {
-    try {
-      const result = await client.query('SELECT 1');
-      console.log(result.rows);
-    } catch (error) {
-      console.error('Error executing query:', error);
-    }
+
+  await db.withTransaction(async (client: PoolClient) => {
+    // Insert some test data
+    await insertNpmDownloadCount(client, {
+      packageName: "react",
+      date: new Date("2024-01-01"),
+      downloadCount: 1000000,
+    });
+
+    // Query the data
+    const downloads = await getDownloadsByPackage(
+      client,
+      "react",
+      new Date("2024-01-01"),
+      new Date("2024-01-31")
+    );
+
+    console.log("Downloads:", downloads);
   });
 };
 
 main()
-  .then(() => {
-    console.log('yay');
-  })
-  .catch((e) => {
-    console.error('An error occurred:', e);
-  });
+  .then(() => console.log("Success!"))
+  .catch(console.error);
