@@ -12,16 +12,24 @@ import { delay } from "./utils";
 
 const npmClient = new NPMApiClient();
 
-const CONCURRENT_TASKS = 5; // Number of concurrent downloads
+const CONCURRENT_TASKS = 15; // Number of concurrent downloads
 const RATE_LIMIT_DELAY = 50; // ms between requests
 const CHUNK_SIZE = 30; // days per chunk
 const RESET_MODE = process.env.RESET === "true";
 const PACKAGE_WHITELIST = new Set([]);
 const USE_WHITELIST = PACKAGE_WHITELIST.size > 0;
 
+const MAX_RETRIES = 3;
+const INITIAL_RETRY_DELAY = 1000; // 1 second
+
 interface DateRange {
   start: Date;
   end: Date;
+}
+
+interface PackageInfo {
+  packageName: string;
+  creationDate: Date;
 }
 
 function normalizeDate(date: Date): Date {
@@ -139,87 +147,121 @@ async function processPackageChunk(
 }
 
 async function processPackageDownloads(
-  dbClient: PoolClient,
+  db: Database,
   packageName: string,
   creationDate: Date,
-  lastPublishDate: Date,
   current: number,
   total: number
 ): Promise<void> {
-  try {
-    const dateChunks = getDateChunks(creationDate, lastPublishDate);
-    const totalDays =
-      Math.floor(
-        (lastPublishDate.getTime() - creationDate.getTime()) /
-          (1000 * 60 * 60 * 24)
-      ) + 1;
+  let lastError: Error | unknown;
 
-    console.log(
-      `\n[${current}/${total}] Starting ${packageName}:\n` +
-        `\tPeriod: ${creationDate.toISOString().split("T")[0]} to ${lastPublishDate.toISOString().split("T")[0]}\n` +
-        `\tTotal Days: ${totalDays}\n` +
-        `\tChunks: ${dateChunks.length}`
-    );
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      // Start a new transaction for this package
+      await db.withTransaction(async (dbClient: PoolClient) => {
+        const today = new Date();
+        const dateChunks = getDateChunks(creationDate, today);
+        const totalDays =
+          Math.floor(
+            (today.getTime() - creationDate.getTime()) / (1000 * 60 * 60 * 24)
+          ) + 1;
 
-    for (let i = 0; i < dateChunks.length; i++) {
-      await delay(RATE_LIMIT_DELAY);
-      await processPackageChunk(
-        dbClient,
-        packageName,
-        dateChunks[i],
-        i + 1,
-        dateChunks.length,
-        current,
-        total
-      );
+        if (attempt > 1) {
+          console.log(
+            `[${current}/${total}] 🔄 Retry attempt ${attempt}/${MAX_RETRIES} for ${packageName}`
+          );
+        }
+
+        console.log(
+          `\n[${current}/${total}] Starting ${packageName}:\n` +
+            `\tPeriod: ${creationDate.toISOString().split("T")[0]} to ${today.toISOString().split("T")[0]}\n` +
+            `\tTotal Days: ${totalDays}\n` +
+            `\tChunks: ${dateChunks.length}`
+        );
+
+        for (let i = 0; i < dateChunks.length; i++) {
+          await delay(RATE_LIMIT_DELAY);
+          await processPackageChunk(
+            dbClient,
+            packageName,
+            dateChunks[i],
+            i + 1,
+            dateChunks.length,
+            current,
+            total
+          );
+        }
+
+        // Update the last_fetched_date after all chunks are processed
+        await updateLastFetchedDate(dbClient, packageName);
+
+        // Get and log total lifetime downloads
+        const lifetimeDownloads = await getTotalLifetimeDownloads(
+          dbClient,
+          packageName
+        );
+        console.log(
+          `[${current}/${total}] ✅ Completed all chunks for ${packageName}\n` +
+            `\tTotal Lifetime Downloads: ${lifetimeDownloads.toLocaleString()}\n`
+        );
+      });
+
+      // If we get here, processing was successful
+      return;
+    } catch (error) {
+      lastError = error;
+
+      if (attempt < MAX_RETRIES) {
+        const backoffDelay = INITIAL_RETRY_DELAY * Math.pow(2, attempt - 1);
+        console.error(
+          `[${current}/${total}] ⚠️ Attempt ${attempt}/${MAX_RETRIES} failed for ${packageName}:`,
+          error instanceof Error ? error.message : error,
+          `\n\tRetrying in ${backoffDelay / 1000} seconds...`
+        );
+        await delay(backoffDelay);
+      }
     }
-
-    // Update the last_fetched_date after all chunks are processed
-    await updateLastFetchedDate(dbClient, packageName);
-
-    // Get and log total lifetime downloads
-    const lifetimeDownloads = await getTotalLifetimeDownloads(
-      dbClient,
-      packageName
-    );
-    console.log(
-      `[${current}/${total}] ✅ Completed all chunks for ${packageName}\n` +
-        `\tTotal Lifetime Downloads: ${lifetimeDownloads.toLocaleString()}\n`
-    );
-  } catch (error) {
-    console.error(
-      `[${current}/${total}] ❌ Failed to process package ${packageName}:`,
-      error instanceof Error ? error.message : error
-    );
-    throw error;
   }
+
+  // If we get here, all retries failed
+  console.error(
+    `[${current}/${total}] ❌ All ${MAX_RETRIES} attempts failed for ${packageName}:`,
+    lastError instanceof Error ? lastError.message : lastError
+  );
+  throw lastError;
 }
 
 async function processBatch(
-  dbClient: PoolClient,
-  packages: Array<{
-    packageName: string;
-    creationDate: Date;
-    lastPublishDate: Date;
-  }>,
+  db: Database,
+  packages: Array<PackageInfo>,
   startIndex: number,
   total: number
 ): Promise<void> {
-  const tasks = packages.map((pkg, index) =>
-    (async () => {
-      await delay(index * RATE_LIMIT_DELAY); // Stagger the requests
-      return processPackageDownloads(
-        dbClient,
-        pkg.packageName,
-        pkg.creationDate,
-        pkg.lastPublishDate,
-        startIndex + index + 1,
-        total
-      );
-    })()
+  const results = await Promise.allSettled(
+    packages.map((pkg, index) =>
+      (async () => {
+        await delay(index * RATE_LIMIT_DELAY); // Stagger the requests
+        return processPackageDownloads(
+          db,
+          pkg.packageName,
+          pkg.creationDate,
+          startIndex + index + 1,
+          total
+        );
+      })()
+    )
   );
 
-  await Promise.all(tasks);
+  // Log any failures in the batch
+  const failures = results.filter(
+    (r): r is PromiseRejectedResult => r.status === "rejected"
+  );
+  if (failures.length > 0) {
+    console.error(`\n${failures.length} package(s) failed in this batch:`);
+    failures.forEach((failure) => {
+      console.error(`  - ${failure.reason}`);
+    });
+  }
 }
 
 async function run(): Promise<void> {
@@ -227,61 +269,78 @@ async function run(): Promise<void> {
   const scriptStartTime = Date.now();
 
   try {
+    // Get packages based on RESET mode - this can be outside transaction
+    let packages: PackageInfo[] = [];
+
     await db.withTransaction(async (dbClient: PoolClient) => {
-      // Get packages based on RESET mode
-      let packages = RESET_MODE
+      packages = RESET_MODE
         ? await getAllPackages(dbClient)
         : await getPackagesWithoutDownloads(dbClient);
-
-      // Filter by whitelist if enabled
-      if (USE_WHITELIST) {
-        const originalCount = packages.length;
-        packages = packages.filter((pkg) =>
-          PACKAGE_WHITELIST.has(pkg.packageName)
-        );
-        console.log(
-          `Filtered ${originalCount} packages to ${packages.length} whitelisted packages`
-        );
-      }
-
-      const totalPackages = packages.length;
-
-      if (totalPackages === 0) {
-        console.log("No packages to process!");
-        return;
-      }
-
-      console.log(
-        `Found ${totalPackages} package${
-          totalPackages === 1 ? "" : "s"
-        } to process with ${CONCURRENT_TASKS} concurrent tasks${
-          RESET_MODE ? " (RESET mode)" : ""
-        }${USE_WHITELIST ? " (WHITELIST mode)" : ""}`
-      );
-
-      // Process packages in batches
-      for (let i = 0; i < packages.length; i += CONCURRENT_TASKS) {
-        const batch = packages.slice(i, i + CONCURRENT_TASKS);
-        console.log(
-          `\nProcessing batch ${Math.floor(i / CONCURRENT_TASKS) + 1}/${Math.ceil(
-            packages.length / CONCURRENT_TASKS
-          )}...`
-        );
-        await processBatch(dbClient, batch, i, totalPackages);
-      }
-
-      const duration = ((Date.now() - scriptStartTime) / 1000).toFixed(2);
-      console.log(
-        `\nAll package downloads processed successfully in ${duration} seconds!`
-      );
     });
+
+    // Convert to simpler package info format
+    packages = packages.map((pkg) => ({
+      packageName: pkg.packageName,
+      creationDate: pkg.creationDate,
+    }));
+
+    // Filter by whitelist if enabled
+    if (USE_WHITELIST) {
+      const originalCount = packages.length;
+      packages = packages.filter((pkg) =>
+        PACKAGE_WHITELIST.has(pkg.packageName)
+      );
+      console.log(
+        `Filtered ${originalCount} packages to ${packages.length} whitelisted packages`
+      );
+    }
+
+    const totalPackages = packages.length;
+    if (totalPackages === 0) {
+      console.log("No packages to process!");
+      return;
+    }
+
+    console.log(
+      `Found ${totalPackages} package${
+        totalPackages === 1 ? "" : "s"
+      } to process with ${CONCURRENT_TASKS} concurrent tasks${
+        RESET_MODE ? " (RESET mode)" : ""
+      }${USE_WHITELIST ? " (WHITELIST mode)" : ""}`
+    );
+
+    let successCount = 0;
+    let failureCount = 0;
+
+    // Process packages in batches
+    for (let i = 0; i < packages.length; i += CONCURRENT_TASKS) {
+      const batch = packages.slice(i, i + CONCURRENT_TASKS);
+      console.log(
+        `\nProcessing batch ${Math.floor(i / CONCURRENT_TASKS) + 1}/${Math.ceil(
+          packages.length / CONCURRENT_TASKS
+        )}...`
+      );
+
+      try {
+        await processBatch(db, batch, i, totalPackages);
+        successCount += batch.length;
+      } catch (error) {
+        failureCount += batch.length;
+        console.error(`Batch processing error:`, error);
+      }
+    }
+
+    const duration = ((Date.now() - scriptStartTime) / 1000).toFixed(2);
+    console.log(
+      `\nProcessing completed in ${duration} seconds!\n` +
+        `Successful packages: ${successCount}\n` +
+        `Failed packages: ${failureCount}`
+    );
   } catch (error) {
     const duration = ((Date.now() - scriptStartTime) / 1000).toFixed(2);
-    console.error(`Transaction failed after ${duration} seconds:`, error);
+    console.error(`Script error after ${duration} seconds:`, error);
     throw error;
   }
-
-  return Promise.resolve();
 }
 
 // Execute the script

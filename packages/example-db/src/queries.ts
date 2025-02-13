@@ -217,11 +217,9 @@ export async function getLastDateForPackage(
 
 export async function getPackagesWithoutDownloads(
   client: PoolClient
-): Promise<
-  Array<{ packageName: string; creationDate: Date; lastPublishDate: Date }>
-> {
+): Promise<Array<{ packageName: string; creationDate: Date }>> {
   const query = `
-    SELECT DISTINCT p.package_name, p.creation_date, p.last_publish_date
+    SELECT DISTINCT p.package_name, p.creation_date
     FROM npm_count.npm_package p
     LEFT JOIN npm_count.daily_downloads d ON p.package_name = d.package_name
     WHERE d.package_name IS NULL
@@ -234,7 +232,6 @@ export async function getPackagesWithoutDownloads(
   return result.rows.map((row) => ({
     packageName: row.package_name,
     creationDate: new Date(row.creation_date),
-    lastPublishDate: new Date(row.last_publish_date),
   }));
 }
 
@@ -275,14 +272,11 @@ export async function updateLastFetchedDate(
 
 export async function getAllPackages(
   client: PoolClient
-): Promise<
-  Array<{ packageName: string; creationDate: Date; lastPublishDate: Date }>
-> {
+): Promise<Array<{ packageName: string; creationDate: Date }>> {
   const query = `
     SELECT DISTINCT 
       package_name,
-      creation_date,
-      last_publish_date
+      creation_date
     FROM npm_count.npm_package
     WHERE is_active = true
     ORDER BY creation_date ASC;
@@ -293,7 +287,6 @@ export async function getAllPackages(
   return result.rows.map((row) => ({
     packageName: row.package_name,
     creationDate: new Date(row.creation_date),
-    lastPublishDate: new Date(row.last_publish_date),
   }));
 }
 
