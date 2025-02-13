@@ -272,3 +272,41 @@ export async function updateLastFetchedDate(
 
   await client.query(query, [packageName]);
 }
+
+export async function getAllPackages(
+  client: PoolClient
+): Promise<
+  Array<{ packageName: string; creationDate: Date; lastPublishDate: Date }>
+> {
+  const query = `
+    SELECT DISTINCT 
+      package_name,
+      creation_date,
+      last_publish_date
+    FROM npm_count.npm_package
+    WHERE is_active = true
+    ORDER BY creation_date ASC;
+  `;
+
+  const result = await client.query(query);
+
+  return result.rows.map((row) => ({
+    packageName: row.package_name,
+    creationDate: new Date(row.creation_date),
+    lastPublishDate: new Date(row.last_publish_date),
+  }));
+}
+
+export async function getTotalLifetimeDownloads(
+  client: PoolClient,
+  packageName: string
+): Promise<number> {
+  const query = `
+    SELECT SUM(download_count) as total_downloads
+    FROM npm_count.daily_downloads
+    WHERE package_name = $1;
+  `;
+
+  const result = await client.query(query, [packageName]);
+  return Number(result.rows[0].total_downloads) || 0;
+}

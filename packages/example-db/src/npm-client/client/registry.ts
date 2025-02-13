@@ -4,9 +4,8 @@ import {
   DateNumberFormat,
   DateRangeFormat,
   DateRangeMode,
-  NPMDownloadResponse,
+  NpmDownloadResponse,
 } from "../types";
-import { getDateRange } from "../utils";
 
 export interface Download {
   dateRange: DateRangeFormat;
@@ -33,17 +32,31 @@ export class NPMApiClient extends APIClient {
     });
   }
 
-  createDownloadUrl(opts: Download): string {
-    return `/downloads/range/${opts.dateRange}/${opts.packageName}`;
+  private formatDate([year, month, day]: DateNumberFormat): string {
+    return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
   }
 
-  public async download(opts: DownloadOpt): Promise<NPMDownloadResponse> {
-    const downloadRange = getDateRange(opts.startDate, opts.range);
-    return await this.get<NPMDownloadResponse>(
-      this.createDownloadUrl({
-        dateRange: downloadRange,
-        packageName: opts.packageName,
-      })
+  private createDownloadRangeUrl(
+    startDate: DateNumberFormat,
+    endDate: DateNumberFormat,
+    packageName: string
+  ): string {
+    const start = this.formatDate(startDate);
+    const end = this.formatDate(endDate);
+    return `/downloads/range/${start}:${end}/${packageName}`;
+  }
+
+  public async download(opts: {
+    startDate: DateNumberFormat;
+    endDate: DateNumberFormat;
+    packageName: string;
+  }): Promise<NpmDownloadResponse> {
+    return await this.get<NpmDownloadResponse>(
+      this.createDownloadRangeUrl(
+        opts.startDate,
+        opts.endDate,
+        opts.packageName
+      )
     );
   }
 
@@ -51,7 +64,7 @@ export class NPMApiClient extends APIClient {
     packageName: string,
     startDate: string,
     endDate: string
-  ): Promise<{ downloads: Array<{ downloads: number; day: string }> }> {
+  ): Promise<NpmDownloadResponse> {
     const url = `/downloads/range/${startDate}:${endDate}/${packageName}`;
     return await this.get(url);
   }

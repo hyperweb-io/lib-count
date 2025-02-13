@@ -33,16 +33,16 @@ export interface NPMObject {
   searchScore: number;
 }
 
-export interface NPMDownload {
+export interface NpmDownload {
   downloads: number;
   day: string;
 }
 
-export interface NPMDownloadResponse {
-  downloads: NPMDownload[];
+export interface NpmDownloadResponse {
   start: string;
   end: string;
   package: string;
+  downloads: NpmDownload[];
 }
 
 export interface Package {
