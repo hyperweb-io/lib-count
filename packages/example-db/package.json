@@ -26,6 +26,10 @@
     "build": "npm run clean; tsc; tsc -p tsconfig.esm.json; npm run copy",
     "build:dev": "npm run clean; tsc --declarationMap; tsc -p tsconfig.esm.json; npm run copy",
     "dev": "DATABASE_URL=postgres://postgres:password@localhost:5432/example_db ts-node ./src/dev.ts",
+    "fetch:packages": "DATABASE_URL=postgres://postgres:password@localhost:5432/example_db ts-node ./src/fetch-packages.ts",
+    "fetch:downloads": "DATABASE_URL=postgres://postgres:password@localhost:5432/example_db ts-node ./src/fetch-downloads.ts",
+    "seed:packages": "DATABASE_URL=postgres://postgres:password@localhost:5432/example_db ts-node ./src/seed-packages.ts",
+    "fetch": "ts-node ./src/fetch.ts",
     "lint": "eslint . --fix",
     "test": "jest",
     "test:watch": "jest --watch"
@@ -33,7 +37,9 @@
   "dependencies": {
     "@cosmology/db-client": "^0.1.0",
     "@types/pg": "^8.11.10",
-    "pg": "^8.13.1"
+    "pg": "^8.13.1",
+    "@interweb/fetch-api-client": "^0.6.0",
+    "@interweb/http-errors": "^0.1.0"
   },
   "keywords": []
 }
