@@ -278,7 +278,6 @@ export async function getAllPackages(
       package_name,
       creation_date
     FROM npm_count.npm_package
-    WHERE is_active = true
     ORDER BY creation_date ASC;
   `;
 
