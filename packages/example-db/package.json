@@ -26,10 +26,14 @@
     "build": "npm run clean; tsc; tsc -p tsconfig.esm.json; npm run copy",
     "build:dev": "npm run clean; tsc --declarationMap; tsc -p tsconfig.esm.json; npm run copy",
     "dev": "DATABASE_URL=postgres://postgres:password@localhost:5432/example_db ts-node ./src/dev.ts",
-    "fetch:packages": "DATABASE_URL=postgres://postgres:password@localhost:5432/example_db ts-node ./src/tasks/npm/npm.tasks.ts fetch:packages",
-    "fetch:downloads": "DATABASE_URL=postgres://postgres:password@localhost:5432/example_db ts-node ./src/tasks/npm/npm.tasks.ts fetch:downloads",
-    "fetch:downloads:reset": "DATABASE_URL=postgres://postgres:password@localhost:5432/example_db ts-node ./src/tasks/npm/npm.tasks.ts fetch:downloads:reset",
-    "generate:report": "DATABASE_URL=postgres://postgres:password@localhost:5432/example_db ts-node ./src/tasks/npm/npm.tasks.ts generate:report",
+    "npm:fetch:packages": "DATABASE_URL=postgres://postgres:password@localhost:5432/example_db ts-node ./src/tasks/npm/npm.tasks.ts fetch:packages",
+    "npm:fetch:downloads": "DATABASE_URL=postgres://postgres:password@localhost:5432/example_db ts-node ./src/tasks/npm/npm.tasks.ts fetch:downloads",
+    "npm:fetch:downloads:reset": "DATABASE_URL=postgres://postgres:password@localhost:5432/example_db ts-node ./src/tasks/npm/npm.tasks.ts fetch:downloads:reset",
+    "npm:report": "DATABASE_URL=postgres://postgres:password@localhost:5432/example_db ts-node ./src/tasks/npm/npm.tasks.ts generate:report",
+    "gh:fetch:top3": "ts-node src/tasks/github/github.tasks.ts fetch:top3",
+    "gh:fetch:top10": "ts-node src/tasks/github/github.tasks.ts fetch:top10",
+    "gh:fetch:all": "ts-node src/tasks/github/github.tasks.ts fetch:all",
+    "gh:report": "ts-node src/tasks/github/github.tasks.ts report",
     "db:dump": "DATABASE_URL=postgres://postgres:password@localhost:5432/example_db ts-node ./src/dump.ts",
     "fetch": "ts-node ./src/fetch.ts",
     "lint": "eslint . --fix",
@@ -38,10 +42,12 @@
   },
   "dependencies": {
     "@cosmology/db-client": "^0.1.0",
-    "@types/pg": "^8.11.10",
-    "pg": "^8.13.1",
     "@interweb/fetch-api-client": "^0.6.0",
-    "@interweb/http-errors": "^0.1.0"
+    "@interweb/http-errors": "^0.1.0",
+    "@octokit/rest": "^21.1.1",
+    "@types/pg": "^8.11.10",
+    "dotenv": "^16.4.7",
+    "pg": "^8.13.1"
   },
   "keywords": []
 }

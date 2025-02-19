@@ -1,7 +1,7 @@
 import { Database } from "@cosmology/db-client";
 import { PoolClient } from "pg";
 import { NPMRegistryClient } from "../../npm-client";
-import { insertPackage } from "../../queries";
+import { insertPackage } from "./npm.queries";
 import { delay } from "../../utils";
 import { packages, blacklistConfig } from "./data-config";
 

@@ -1,6 +1,6 @@
 import { execute as fetchPackages } from "./fetch-packages";
 import { execute as fetchDownloads } from "./fetch-downloads";
-import { generateReport } from "./make-reports";
+import { generateReport } from "./npm.reports";
 import * as fs from "fs";
 import * as path from "path";
 

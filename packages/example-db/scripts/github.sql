@@ -16,8 +16,9 @@ CREATE TABLE github.organization (
     name text,
     description text,
     avatar_url text,
-    created_at timestamp with time zone NOT NULL,
-    updated_at timestamp with time zone NOT NULL
+    is_active boolean DEFAULT true,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Create the authors table (GitHub users)
@@ -26,14 +27,12 @@ CREATE TABLE github.author (
     github_id bigint UNIQUE NOT NULL,
     login text NOT NULL,
     name text,
-    email text,
     avatar_url text,
-    bio text,
-    created_at timestamp with time zone NOT NULL,
-    updated_at timestamp with time zone NOT NULL
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP
 );
 
--- Create the repositories table with fork information
+-- Create the repositories table
 CREATE TABLE github.repository (
     id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
     github_id bigint UNIQUE NOT NULL,
@@ -41,52 +40,118 @@ CREATE TABLE github.repository (
     full_name text NOT NULL,
     description text,
     url text NOT NULL,
-    homepage_url text,
     is_fork boolean NOT NULL DEFAULT false,
-    fork_source_id uuid REFERENCES github.repository(id),
-    owner_id uuid NOT NULL,
-    owner_type text NOT NULL CHECK (owner_type IN ('organization', 'author')),
-    stars_count bigint NOT NULL DEFAULT 0,
-    forks_count bigint NOT NULL DEFAULT 0,
-    open_issues_count bigint NOT NULL DEFAULT 0,
-    pull_requests_count bigint NOT NULL DEFAULT 0,
-    commits_count bigint NOT NULL DEFAULT 0,
-    size_kb bigint NOT NULL DEFAULT 0,
+    fork_date timestamp with time zone,
+    owner_id uuid NOT NULL REFERENCES github.organization(id),
+    stars_count integer NOT NULL DEFAULT 0,
+    forks_count integer NOT NULL DEFAULT 0,
+    commits_count integer NOT NULL DEFAULT 0,
     primary_language text,
-    languages jsonb,
-    topics text[],
-    created_at timestamp with time zone NOT NULL,
-    updated_at timestamp with time zone NOT NULL,
-    pushed_at timestamp with time zone NOT NULL,
-    CONSTRAINT owner_fk FOREIGN KEY (owner_id, owner_type) REFERENCES 
-        (CASE 
-            WHEN owner_type = 'organization' THEN github.organization(id)
-            WHEN owner_type = 'author' THEN github.author(id)
-        END)
+    is_active boolean DEFAULT true,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP
 );
 
--- Create the contributions table
-CREATE TABLE github.contribution (
+-- Create daily contributions table
+CREATE TABLE github.daily_contribution (
     id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
     repository_id uuid NOT NULL REFERENCES github.repository(id),
     author_id uuid NOT NULL REFERENCES github.author(id),
-    contribution_type text NOT NULL CHECK (
-        contribution_type IN ('commit', 'issue', 'pull_request', 'review')
-    ),
-    count bigint NOT NULL DEFAULT 0,
+    date date NOT NULL,
+    commits integer NOT NULL DEFAULT 0,
+    additions integer NOT NULL DEFAULT 0,
+    deletions integer NOT NULL DEFAULT 0,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT unique_daily_contribution UNIQUE (repository_id, author_id, date)
+);
+
+-- Create author organization history
+CREATE TABLE github.author_organization_history (
+    id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+    author_id uuid NOT NULL REFERENCES github.author(id),
+    organization_id uuid NOT NULL REFERENCES github.organization(id),
+    joined_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (author_id, organization_id, joined_at)
+);
+
+-- Create organization connections table for analyzing inter-org relationships
+CREATE TABLE github.organization_connection (
+    id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+    source_org_id uuid NOT NULL REFERENCES github.organization(id),
+    target_org_id uuid NOT NULL REFERENCES github.organization(id),
+    shared_contributors integer NOT NULL DEFAULT 0,
+    last_analyzed_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT different_orgs CHECK (source_org_id != target_org_id),
+    UNIQUE (source_org_id, target_org_id)
+);
+
+-- Create contribution summary table for faster analysis
+CREATE TABLE github.contribution_summary (
+    id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+    author_id uuid NOT NULL REFERENCES github.author(id),
+    organization_id uuid NOT NULL REFERENCES github.organization(id),
+    total_commits integer NOT NULL DEFAULT 0,
     first_contribution_at timestamp with time zone NOT NULL,
     last_contribution_at timestamp with time zone NOT NULL,
-    UNIQUE (repository_id, author_id, contribution_type)
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (author_id, organization_id)
 );
 
 -- Create indexes for better query performance
-CREATE INDEX idx_repository_owner ON github.repository(owner_id, owner_type);
-CREATE INDEX idx_repository_fork_source ON github.repository(fork_source_id) WHERE fork_source_id IS NOT NULL;
-CREATE INDEX idx_contribution_repository ON github.contribution(repository_id);
-CREATE INDEX idx_contribution_author ON github.contribution(author_id);
-CREATE INDEX idx_repository_stars ON github.repository(stars_count DESC);
-CREATE INDEX idx_repository_updated ON github.repository(updated_at DESC);
+CREATE INDEX idx_repository_owner ON github.repository(owner_id);
+CREATE INDEX idx_repository_fork_date ON github.repository(fork_date) WHERE fork_date IS NOT NULL;
+CREATE INDEX idx_daily_contribution_repo_date ON github.daily_contribution(repository_id, date);
+CREATE INDEX idx_daily_contribution_author_date ON github.daily_contribution(author_id, date);
+CREATE INDEX idx_author_org_history_dates ON github.author_organization_history(author_id, organization_id, joined_at);
 
--- Add full-text search capabilities
-CREATE INDEX idx_repository_search ON github.repository 
-    USING GIN (to_tsvector('english', name || ' ' || COALESCE(description, '')));
+-- Add indexes for org connection queries
+CREATE INDEX idx_org_connection_source ON github.organization_connection(source_org_id);
+CREATE INDEX idx_org_connection_target ON github.organization_connection(target_org_id);
+CREATE INDEX idx_contribution_summary_author ON github.contribution_summary(author_id);
+CREATE INDEX idx_contribution_summary_org ON github.contribution_summary(organization_id);
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS repo_owner_idx ON github.repository (owner_id);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS contribution_repo_idx ON github.daily_contribution (repository_id);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS contribution_author_idx ON github.daily_contribution (author_id);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS org_connection_source_idx ON github.organization_connection (source_org_id); 
+
+-- Create timestamp update trigger
+CREATE OR REPLACE FUNCTION github.update_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = CURRENT_TIMESTAMP;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Add update triggers
+CREATE TRIGGER update_organization_timestamp
+    BEFORE UPDATE ON github.organization
+    FOR EACH ROW
+    EXECUTE FUNCTION github.update_updated_at();
+
+CREATE TRIGGER update_author_timestamp
+    BEFORE UPDATE ON github.author
+    FOR EACH ROW
+    EXECUTE FUNCTION github.update_updated_at();
+
+CREATE TRIGGER update_repository_timestamp
+    BEFORE UPDATE ON github.repository
+    FOR EACH ROW
+    EXECUTE FUNCTION github.update_updated_at();
+
+-- Add trigger for org connection timestamp
+CREATE TRIGGER update_org_connection_timestamp
+    BEFORE UPDATE ON github.organization_connection
+    FOR EACH ROW
+    EXECUTE FUNCTION github.update_updated_at();
+
+-- Add trigger for contribution summary timestamp
+CREATE TRIGGER update_contribution_summary_timestamp
+    BEFORE UPDATE ON github.contribution_summary
+    FOR EACH ROW
+    EXECUTE FUNCTION github.update_updated_at();
