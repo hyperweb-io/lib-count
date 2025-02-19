@@ -1,18 +1,22 @@
 #!/bin/bash
 
 # Set PostgreSQL credentials and database URL
-DB_NAME="example_db"
-DB_USER="postgres"
-DB_PASSWORD="password"
-DB_HOST="localhost"
-DB_PORT="5432"
-DATABASE_URL="postgres://$DB_USER:$DB_PASSWORD@$DB_HOST:$DB_PORT/postgres"
+export DB_NAME="example_db"
+export DB_USER="postgres" 
+export DB_PASSWORD="password"
+export DB_HOST="localhost"
+export DB_PORT="5432"
+export DATABASE_URL="postgres://$DB_USER:$DB_PASSWORD@$DB_HOST:$DB_PORT/postgres"
+
+# Export PGPASSWORD for psql
+export PGPASSWORD="$DB_PASSWORD"
+
+# Path to the schema files
+NPM_SCHEMA="scripts/npm.sql"
+GITHUB_SCHEMA="scripts/github.sql"
 
 # Export DATABASE_URL
 export DATABASE_URL
-
-# Path to the schema file
-SCHEMA_FILE="scripts/schema.sql"
 
 # Inform the user about the DATABASE_URL
 echo "DATABASE_URL is set to $DATABASE_URL"
@@ -25,8 +29,14 @@ psql -U "$DB_USER" -h "$DB_HOST" -p "$DB_PORT" -c "DROP DATABASE IF EXISTS $DB_N
 echo "Creating database $DB_NAME..."
 psql -U "$DB_USER" -h "$DB_HOST" -p "$DB_PORT" -c "CREATE DATABASE $DB_NAME;"
 
-# Run the schema file to set up the database
-echo "Applying schema from $SCHEMA_FILE..."
-psql -U "$DB_USER" -h "$DB_HOST" -p "$DB_PORT" -d "$DB_NAME" -f "$SCHEMA_FILE"
+# Run the schema files to set up the database
+echo "Applying NPM schema from $NPM_SCHEMA..."
+psql -U "$DB_USER" -h "$DB_HOST" -p "$DB_PORT" -d "$DB_NAME" -f "$NPM_SCHEMA"
+
+# echo "Applying GitHub schema from $GITHUB_SCHEMA..."
+# psql -U "$DB_USER" -h "$DB_HOST" -p "$DB_PORT" -d "$DB_NAME" -f "$GITHUB_SCHEMA"
 
 echo "Schema applied successfully!"
+
+# Unset password after we're done
+unset PGPASSWORD
