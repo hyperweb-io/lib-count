@@ -155,3 +155,24 @@ CREATE TRIGGER update_contribution_summary_timestamp
     BEFORE UPDATE ON github.contribution_summary
     FOR EACH ROW
     EXECUTE FUNCTION github.update_updated_at();
+
+-- Stored procedures
+
+CREATE OR REPLACE FUNCTION github.get_repositories_by_org_login(org_login TEXT)
+RETURNS TABLE(repository_name TEXT) AS $$
+BEGIN
+    RETURN QUERY
+    WITH org_authors AS (
+        -- Get all authors associated with the given organization
+        SELECT a.id AS author_id
+        FROM github.author a
+        JOIN github.author_organization_history aoh ON a.id = aoh.author_id
+        JOIN github.organization o ON aoh.organization_id = o.id
+        WHERE o.login = org_login
+    )
+    SELECT DISTINCT r.name AS repository_name
+    FROM github.repository r
+    JOIN github.daily_contribution dc ON r.id = dc.repository_id
+    JOIN org_authors oa ON dc.author_id = oa.author_id;
+END;
+$$ LANGUAGE plpgsql;
