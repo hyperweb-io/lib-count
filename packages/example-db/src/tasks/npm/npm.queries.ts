@@ -11,42 +11,6 @@ interface DailyDownload {
   downloadCount: number;
 }
 
-export async function insertNpmDownloadCount(
-  client: PoolClient,
-  data: NpmDownloadCount
-): Promise<void> {
-  const query = `
-    INSERT INTO npm_count.npm_download_count (package_name, date, download_count)
-    VALUES ($1, $2, $3)
-    ON CONFLICT (package_name, date) 
-    DO UPDATE SET download_count = EXCLUDED.download_count;
-  `;
-
-  await client.query(query, [data.packageName, data.date, data.downloadCount]);
-}
-
-export async function bulkInsertNpmDownloadCounts(
-  client: PoolClient,
-  data: NpmDownloadCount[]
-): Promise<void> {
-  const query = `
-    INSERT INTO npm_count.npm_download_count (package_name, date, download_count)
-    VALUES ($1, $2, $3)
-    ON CONFLICT (package_name, date) 
-    DO UPDATE SET download_count = EXCLUDED.download_count;
-  `;
-
-  await Promise.all(
-    data.map((record) =>
-      client.query(query, [
-        record.packageName,
-        record.date,
-        record.downloadCount,
-      ])
-    )
-  );
-}
-
 export async function getDownloadsByPackage(
   client: PoolClient,
   packageName: string,
@@ -55,7 +19,7 @@ export async function getDownloadsByPackage(
 ): Promise<NpmDownloadCount[]> {
   const query = `
     SELECT package_name, date, download_count
-    FROM npm_count.npm_download_count
+    FROM npm_count.daily_downloads
     WHERE package_name = $1
     AND date BETWEEN $2 AND $3
     ORDER BY date ASC;
@@ -78,7 +42,7 @@ export async function getTotalDownloadsByPackage(
 ): Promise<number> {
   const query = `
     SELECT SUM(download_count) as total
-    FROM npm_count.npm_download_count
+    FROM npm_count.daily_downloads
     WHERE package_name = $1
     AND date BETWEEN $2 AND $3;
   `;
@@ -97,7 +61,7 @@ export async function getTopPackagesByDownloads(
     SELECT 
       package_name,
       SUM(download_count) as total_downloads
-    FROM npm_count.npm_download_count
+    FROM npm_count.daily_downloads
     WHERE date BETWEEN $1 AND $2
     GROUP BY package_name
     ORDER BY total_downloads DESC
@@ -120,7 +84,7 @@ export async function getDailyAverageDownloads(
 ): Promise<number> {
   const query = `
     SELECT AVG(download_count) as avg_downloads
-    FROM npm_count.npm_download_count
+    FROM npm_count.daily_downloads
     WHERE package_name = $1
     AND date BETWEEN $2 AND $3;
   `;
@@ -200,7 +164,7 @@ export async function getLastDateForPackage(
 ): Promise<Date | null> {
   const query = `
       SELECT MAX(date) AS last_date
-      FROM npm_count.npm_download_count
+      FROM npm_count.daily_downloads
       WHERE package_name = $1;
     `;
 
@@ -246,8 +210,7 @@ export async function insertDailyDownloads(
     VALUES ($1, $2, $3)
     ON CONFLICT (package_name, date) 
     DO UPDATE SET 
-      download_count = EXCLUDED.download_count,
-      created_at = CURRENT_TIMESTAMP;
+      download_count = EXCLUDED.download_count;
   `;
 
   await Promise.all(

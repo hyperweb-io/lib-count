@@ -2,9 +2,10 @@ import "../../setup-env";
 import { Database } from "@cosmology/db-client";
 import { Octokit, RestEndpointMethodTypes } from "@octokit/rest";
 import * as queries from "./github.queries";
-import { organizations, fetchTypes } from "./data-config";
+import { organizations, fetchTypes, knownForks } from "./data-config";
+import { findCommonHistory, isRepositoryAFork } from "./analyze-repo";
 
-const BATCH_SIZE = 100; // Number of concurrent requests
+const BATCH_SIZE = 5; // Reduced from 100 to 5 for better rate limit handling
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 
 if (!GITHUB_TOKEN) {
@@ -59,6 +60,11 @@ const octokit = new Octokit({
   },
 });
 
+// Add delay helper
+async function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function fetchContributorOrganizations(
   client: any,
   authorId: string,
@@ -101,6 +107,13 @@ async function fetchContributorOrganizations(
       error
     );
   }
+}
+
+async function isKnownFork(
+  fullName: string
+): Promise<{ isFork: boolean; parentRepo?: string }> {
+  const parentRepo = knownForks[fullName as keyof typeof knownForks];
+  return parentRepo ? { isFork: true, parentRepo } : { isFork: false };
 }
 
 async function fetchOrganizationData(
@@ -169,126 +182,161 @@ async function fetchOrganizationData(
     })`
   );
 
-  // 3. Process repositories in parallel batches
+  // 3. Process repositories in smaller batches with delays
   let processedRepos = 0;
   for (let i = 0; i < targetRepos.length; i += BATCH_SIZE) {
     const batch = targetRepos.slice(i, i + BATCH_SIZE);
     await Promise.all(
       batch.map(async (repo: Repository) => {
-        console.log(`    📂 Processing ${repo.full_name}...`);
+        try {
+          console.log(`    📂 Processing ${repo.full_name}...`);
 
-        // Insert repository
-        const { id: repoId } = await queries.insertRepository(client, {
-          ...repo,
-          fork_date: repo.fork_date as Date,
-          owner_id: orgId,
-        });
+          // Simplified fork detection
+          console.log(`      🔍 Checking fork status...`);
 
-        // Get fork date if it's a fork (Requirement #5)
-        if (repo.is_fork) {
-          try {
-            const { data: commits } = await octokit.rest.repos.listCommits({
-              owner: org,
-              repo: repo.name,
-              per_page: 1,
-            });
-            const forkDate = commits[0]?.commit.committer?.date;
-            if (forkDate) {
-              repo.fork_date = forkDate; // Update the repo object with fork_date
-              await client.query(
-                "UPDATE github.repository SET fork_date = $1 WHERE id = $2",
-                [forkDate, repoId]
-              );
-              console.log(`      📅 Fork date set to ${forkDate}`);
-            }
-          } catch (error) {
-            console.warn(
-              `      ⚠️  Failed to get fork date for ${org}/${repo.name}`
-            );
-          }
-        }
-
-        // Fetch contributions (Requirement #6)
-        console.log(`      📊 Fetching contributor statistics...`);
-        const stats = (await octokit.paginate(
-          octokit.rest.repos.getContributorsStats,
-          {
+          // First check GitHub API metadata
+          const { data: repoData } = await octokit.rest.repos.get({
             owner: org,
             repo: repo.name,
+          });
+
+          let isFork = repoData.fork;
+          let parentRepo = repoData.parent?.full_name;
+          let forkDate: Date | undefined;
+
+          // If not marked as fork by GitHub, check whitelist
+          if (!isFork) {
+            const knownForkInfo = await isKnownFork(repo.full_name);
+            isFork = knownForkInfo.isFork;
+            parentRepo = knownForkInfo.parentRepo;
           }
-        )) as ContributorStats;
 
-        let totalCommits = 0;
+          if (isFork) {
+            console.log(`      📑 Fork detected! Parent: ${parentRepo}`);
+            repo.is_fork = true;
 
-        // Process contributors in parallel
-        await Promise.all(
-          stats.map(async (stat) => {
-            if (!stat.author) return;
+            // Get fork date from first commit if available
+            try {
+              const { data: commits } = await octokit.rest.repos.listCommits({
+                owner: org,
+                repo: repo.name,
+                per_page: 1,
+              });
+              forkDate = commits[0]?.commit.committer?.date
+                ? new Date(commits[0].commit.committer.date)
+                : undefined;
+            } catch (error) {
+              console.warn(`      ⚠️  Failed to get fork date`);
+            }
+          }
 
-            // Insert/Update author
-            const { id: authorId } = await queries.insertAuthor(client, {
-              github_id: stat.author.id,
-              login: stat.author.login,
-              name: undefined,
-              avatar_url: stat.author.avatar_url,
-            });
+          // Insert repository
+          const { id: repoId } = await queries.insertRepository(client, {
+            ...repo,
+            is_fork: isFork,
+            fork_date: forkDate,
+            owner_id: orgId,
+          });
 
-            // Fetch all organizations this contributor belongs to
-            await fetchContributorOrganizations(
-              client,
-              authorId,
-              stat.author.login
-            );
+          // Fetch contributions (Requirement #6)
+          console.log(`      📊 Fetching contributor statistics...`);
+          const stats = (await octokit.paginate(
+            octokit.rest.repos.getContributorsStats,
+            {
+              owner: org,
+              repo: repo.name,
+            }
+          )) as ContributorStats;
 
-            // Process weekly contributions
-            for (const week of stat.weeks) {
-              if (
-                !repo.is_fork ||
-                new Date(week.w * 1000) >= new Date(repo.fork_date || 0)
-              ) {
-                totalCommits += week.c;
+          let totalCommits = 0;
 
-                // Store daily contributions
-                await queries.insertDailyContribution(client, {
-                  repository_id: repoId,
-                  author_id: authorId,
-                  date: new Date(week.w * 1000),
-                  commits: week.c,
-                  additions: week.a,
-                  deletions: week.d,
-                });
+          // Process contributors in parallel
+          await Promise.all(
+            stats.map(async (stat) => {
+              if (!stat.author) return;
 
-                // Track author organization history (Requirement #7)
-                if (week.c > 0) {
-                  await queries.updateAuthorOrgHistory(client, {
+              // Insert/Update author
+              const { id: authorId } = await queries.insertAuthor(client, {
+                github_id: stat.author.id,
+                login: stat.author.login,
+                name: undefined,
+                avatar_url: stat.author.avatar_url,
+              });
+
+              // Fetch all organizations this contributor belongs to
+              await fetchContributorOrganizations(
+                client,
+                authorId,
+                stat.author.login
+              );
+
+              // Process weekly contributions
+              for (const week of stat.weeks) {
+                if (
+                  !repo.is_fork ||
+                  new Date(week.w * 1000) >= new Date(repo.fork_date || 0)
+                ) {
+                  totalCommits += week.c;
+
+                  // Store daily contributions
+                  await queries.insertDailyContribution(client, {
+                    repository_id: repoId,
                     author_id: authorId,
-                    organization_id: orgId,
-                    joined_at: new Date(week.w * 1000),
+                    date: new Date(week.w * 1000),
+                    commits: week.c,
+                    additions: week.a,
+                    deletions: week.d,
                   });
+
+                  // Track author organization history (Requirement #7)
+                  if (week.c > 0) {
+                    await queries.updateAuthorOrgHistory(client, {
+                      author_id: authorId,
+                      organization_id: orgId,
+                      joined_at: new Date(week.w * 1000),
+                    });
+                  }
                 }
               }
-            }
 
-            // Update contribution summary for this author and organization
-            await updateContributionSummary(client, authorId, orgId);
-          })
-        );
+              // Update contribution summary for this author and organization
+              await updateContributionSummary(client, authorId, orgId);
+            })
+          );
 
-        // Update repository commit count
-        await client.query(
-          "UPDATE github.repository SET commits_count = $1 WHERE id = $2",
-          [totalCommits, repoId]
-        );
+          // Update repository commit count
+          await client.query(
+            "UPDATE github.repository SET commits_count = $1 WHERE id = $2",
+            [totalCommits, repoId]
+          );
 
-        processedRepos++;
-        console.log(
-          `      ✅ Processed repository with ${totalCommits} commits`
-        );
-        console.log(
-          `      📈 Progress: ${processedRepos}/${targetRepos.length} repositories`
-        );
+          processedRepos++;
+          console.log(
+            `      ✅ Processed repository with ${totalCommits} commits`
+          );
+          console.log(
+            `      📈 Progress: ${processedRepos}/${targetRepos.length} repositories`
+          );
+        } catch (error) {
+          if (
+            error instanceof Error &&
+            "status" in error &&
+            error.status === 403
+          ) {
+            console.log(`      ⏳ Rate limit hit, waiting for 60 seconds...`);
+            await delay(60000); // Wait 60 seconds on rate limit
+            throw error; // Retry the operation
+          }
+          throw error;
+        }
       })
     );
+
+    // Add delay between batches
+    if (i + BATCH_SIZE < targetRepos.length) {
+      console.log(`    ⏳ Waiting between batches...`);
+      await delay(5000); // 5 seconds between batches
+    }
   }
 
   // 4. Update organization connections with enhanced query
@@ -409,4 +457,4 @@ if (require.main === module) {
     });
 }
 
-export { fetchAll };
+export { fetchAll, isRepositoryAFork, findCommonHistory };

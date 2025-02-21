@@ -17,3 +17,4 @@
 - [ ] 7. Make a special table to analyze the orgs change for authors (only contributors to the orgs in context) .i.e. which orgs that a contributor is associated with and what orgs change over time for that author
 - [ ] 8. Analize a link between github orgs, contributors, github repos i.e. For example which repos does google have an engineer as a contributor
 - [ ] 9. Make a report of the data
+- [ ] 10. Convert complex queries into stored procedures

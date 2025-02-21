@@ -21,6 +21,13 @@ interface TotalStats {
   web3: DownloadStats;
   utils: DownloadStats;
   total: DownloadStats;
+  lifetime: number;
+}
+
+interface LifetimeStats {
+  total: number;
+  byCategory: Record<string, number>;
+  uncategorizedPackages: PackageStats[];
 }
 
 async function getPackageStats(
@@ -111,7 +118,7 @@ function generateCategorySection(
 }
 
 function generateTotalSection(totals: TotalStats): string {
-  return `### Total Downloads
+  return `### Recent Downloads
 
 | Name | Total | Monthly | Weekly |
 | ------- | ------ | ------- | ----- |
@@ -129,6 +136,128 @@ function generateTotalSection(totals: TotalStats): string {
   )} | ${formatNumber(totals.utils.weekly)} |\n`;
 }
 
+async function getLifetimeDownloadsByCategory(
+  dbClient: PoolClient
+): Promise<LifetimeStats> {
+  // First get all packages and their stats with a simpler query
+  const result = await dbClient.query(`
+    WITH total_stats AS (
+      SELECT COALESCE(SUM(download_count), 0) as total_lifetime_downloads
+      FROM npm_count.daily_downloads
+    ),
+    package_stats AS (
+      SELECT 
+        p.package_name,
+        COALESCE(SUM(d.download_count), 0) as total_downloads,
+        COALESCE(SUM(CASE WHEN d.date >= NOW() - INTERVAL '30 days' THEN d.download_count ELSE 0 END), 0) as monthly_downloads,
+        COALESCE(SUM(CASE WHEN d.date >= NOW() - INTERVAL '7 days' THEN d.download_count ELSE 0 END), 0) as weekly_downloads
+      FROM npm_count.npm_package p
+      LEFT JOIN npm_count.daily_downloads d ON d.package_name = p.package_name
+      GROUP BY p.package_name
+    )
+    SELECT 
+      ps.*,
+      t.total_lifetime_downloads
+    FROM package_stats ps
+    CROSS JOIN total_stats t;
+  `);
+
+  console.log("Total rows returned from DB:", result.rows.length);
+  console.log("Sample row:", result.rows[0]);
+
+  let totalLifetimeDownloads = 0;
+  const allPackages = new Map<string, PackageStats>();
+
+  // Process all packages first
+  result.rows.forEach((row, index) => {
+    if (index === 0) {
+      totalLifetimeDownloads = parseInt(row.total_lifetime_downloads);
+      console.log("Total lifetime downloads:", totalLifetimeDownloads);
+    }
+
+    const packageStats: PackageStats = {
+      name: row.package_name,
+      total: parseInt(row.total_downloads),
+      monthly: parseInt(row.monthly_downloads),
+      weekly: parseInt(row.weekly_downloads),
+    };
+    allPackages.set(row.package_name, packageStats);
+  });
+
+  // Debug output for packages
+  console.log("All packages from DB:", Array.from(allPackages.keys()));
+  console.log("Total packages in DB:", allPackages.size);
+
+  // Create a set of categorized packages from data-config
+  const categorizedPackages = new Set<string>();
+  for (const [category, packageList] of Object.entries(packages)) {
+    console.log(`Category ${category} packages:`, packageList);
+    packageList.forEach((pkg) => categorizedPackages.add(pkg));
+  }
+
+  console.log(
+    "Categorized packages from config:",
+    Array.from(categorizedPackages)
+  );
+
+  // Find uncategorized packages
+  const uncategorizedPackages: PackageStats[] = [];
+  const uncategorizedTotals = { total: 0, monthly: 0, weekly: 0 };
+
+  for (const [packageName, stats] of allPackages) {
+    if (!categorizedPackages.has(packageName)) {
+      console.log(
+        "Found uncategorized package:",
+        packageName,
+        "with stats:",
+        stats
+      );
+      uncategorizedPackages.push(stats);
+      uncategorizedTotals.total += stats.total;
+      uncategorizedTotals.monthly += stats.monthly;
+      uncategorizedTotals.weekly += stats.weekly;
+    }
+  }
+
+  console.log("Uncategorized totals:", uncategorizedTotals);
+  console.log(
+    "Total uncategorized packages found:",
+    uncategorizedPackages.length
+  );
+
+  const stats: LifetimeStats = {
+    total: totalLifetimeDownloads,
+    byCategory: {},
+    uncategorizedPackages: uncategorizedPackages.sort(
+      (a, b) => b.total - a.total
+    ),
+  };
+
+  return stats;
+}
+
+function generateUncategorizedSection(packages: PackageStats[]): string {
+  if (packages.length === 0) return "";
+
+  const lines = [
+    `### Uncategorized Packages\n`,
+    "| Name | Total | Monthly | Weekly |",
+    "| ------- | ------ | ------- | ----- |",
+  ];
+
+  packages
+    .sort((a, b) => b.total - a.total)
+    .forEach((pkg) => {
+      lines.push(
+        `| [${pkg.name}](https://www.npmjs.com/package/${pkg.name}) | ${formatNumber(
+          pkg.total
+        )} | ${formatNumber(pkg.monthly)} | ${formatNumber(pkg.weekly)} |`
+      );
+    });
+
+  return lines.join("\n") + "\n";
+}
+
 async function generateReport(): Promise<string> {
   const db = new Database();
   const categoryStats = new Map<string, CategoryStats>();
@@ -137,11 +266,25 @@ async function generateReport(): Promise<string> {
     web3: { total: 0, monthly: 0, weekly: 0 },
     utils: { total: 0, monthly: 0, weekly: 0 },
     total: { total: 0, monthly: 0, weekly: 0 },
+    lifetime: 0,
   };
 
   try {
+    let lifetimeStats: LifetimeStats;
+
     await db.withTransaction(async (dbClient: PoolClient) => {
-      // Gather stats for each category
+      // Get lifetime stats first
+      lifetimeStats = await getLifetimeDownloadsByCategory(dbClient);
+      totals.lifetime = lifetimeStats.total;
+
+      // Add uncategorized package stats to utils category first
+      for (const pkg of lifetimeStats.uncategorizedPackages) {
+        totals.utils.total += pkg.total;
+        totals.utils.monthly += pkg.monthly;
+        totals.utils.weekly += pkg.weekly;
+      }
+
+      // Gather stats for each category from data-config
       for (const [category, packageNames] of Object.entries(packages)) {
         const stats = await getCategoryStats(dbClient, category, packageNames);
         categoryStats.set(category, stats);
@@ -157,11 +300,16 @@ async function generateReport(): Promise<string> {
         target.total += stats.total;
         target.monthly += stats.monthly;
         target.weekly += stats.weekly;
-
-        totals.total.total += stats.total;
-        totals.total.monthly += stats.monthly;
-        totals.total.weekly += stats.weekly;
       }
+
+      // Calculate final totals to match lifetime total
+      totals.total.total = lifetimeStats.total;
+      totals.total.monthly =
+        totals.web2.monthly + totals.web3.monthly + totals.utils.monthly;
+      totals.total.weekly =
+        totals.web2.weekly + totals.web3.weekly + totals.utils.weekly;
+
+      console.log("Final totals:", totals);
     });
 
     // Generate the report
@@ -176,6 +324,11 @@ async function generateReport(): Promise<string> {
     for (const [category, stats] of categoryStats) {
       sections.push(generateCategorySection(category, stats));
     }
+
+    // Add uncategorized section
+    sections.push(
+      generateUncategorizedSection(lifetimeStats.uncategorizedPackages)
+    );
 
     sections.push(generateUnderstandingSection());
 

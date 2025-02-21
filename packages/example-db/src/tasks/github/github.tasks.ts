@@ -7,13 +7,13 @@ async function runCommand(command: string): Promise<void> {
   console.log(`Executing GitHub task: ${command}`);
 
   switch (command) {
-    case "fetch:all":
+    case "fetch":
       await fetchAll(fetchTypes.all);
       break;
     case "report":
       await generateReport();
       break;
-    case "export:contributors":
+    case "export":
       await exportContributors();
       break;
     default:
