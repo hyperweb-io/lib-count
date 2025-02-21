@@ -7,7 +7,7 @@ import {
   insertDailyDownloads,
   updateLastFetchedDate,
   getTotalLifetimeDownloads,
-} from "../../queries";
+} from "./npm.queries";
 import { delay } from "../../utils";
 
 const npmClient = new NPMApiClient();
