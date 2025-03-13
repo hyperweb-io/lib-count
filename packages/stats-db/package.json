@@ -1,12 +1,12 @@
 {
-  "name": "@hyperweb-io/example-db",
+  "name": "@hyperweb-io/stats-db",
   "version": "0.0.1",
   "author": "Hyperweb <developers@hyperweb.io>",
-  "description": "example",
+  "description": "Stats database",
   "main": "index.js",
   "module": "esm/index.js",
   "types": "index.d.ts",
-  "homepage": "https://github.com/hyperweb-io/db-utils",
+  "homepage": "https://github.com/hyperweb-io/hyperweb-statistics",
   "license": "SEE LICENSE IN LICENSE",
   "publishConfig": {
     "access": "public",
@@ -14,10 +14,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/hyperweb-io/db-utils"
+    "url": "https://github.com/hyperweb-io/hyperweb-statistics"
   },
   "bugs": {
-    "url": "https://github.com/hyperweb-io/db-utils/issues"
+    "url": "https://github.com/hyperweb-io/hyperweb-statistics/issues"
   },
   "scripts": {
     "copy": "copyfiles -f ../../LICENSE README.md package.json dist",
@@ -30,6 +30,8 @@
     "npm:fetch:downloads": "DATABASE_URL=postgres://postgres:password@localhost:5432/example_db ts-node ./src/tasks/npm/npm.tasks.ts fetch:downloads",
     "npm:fetch:downloads:reset": "DATABASE_URL=postgres://postgres:password@localhost:5432/example_db ts-node ./src/tasks/npm/npm.tasks.ts fetch:downloads:reset",
     "npm:report": "DATABASE_URL=postgres://postgres:password@localhost:5432/example_db ts-node ./src/tasks/npm/npm.tasks.ts generate:report",
+    "npm:badges": "DATABASE_URL=postgres://postgres:password@localhost:5432/example_db ts-node ./src/tasks/npm/npm.tasks.ts generate:badges",
+    "npm:readme": "DATABASE_URL=postgres://postgres:password@localhost:5432/example_db ts-node ./src/tasks/npm/npm.tasks.ts generate:readme",
     "gh:fetch": "ts-node src/tasks/github/github.tasks.ts fetch",
     "gh:report": "ts-node src/tasks/github/github.tasks.ts report",
     "gh:export": "ts-node src/tasks/github/github.tasks.ts export",

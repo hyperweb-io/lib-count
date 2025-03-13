@@ -12,7 +12,7 @@
   "registry": "https://registry.npmjs.org",
   "command": {
     "create": {
-      "homepage": "https://github.com/hyperweb-io/db-utils",
+      "homepage": "https://github.com/hyperweb-io/hyperweb-statistics",
       "license": "SEE LICENSE IN LICENSE",
       "access": "restricted"
     },
