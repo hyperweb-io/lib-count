@@ -34,13 +34,16 @@
     "gh:report": "ts-node src/tasks/github/github.tasks.ts report",
     "gh:export": "ts-node src/tasks/github/github.tasks.ts export",
     "gh:analyze": "ts-node src/tasks/github/analyze-repo.ts",
-    "db:dump": "DATABASE_URL=postgres://postgres:password@localhost:5432/example_db ts-node ./src/dump.ts",
+    "db:dump": "ts-node ./src/dump.ts --no-upload",
+    "db:dump:s3": "ts-node ./src/dump.ts",
     "fetch": "ts-node ./src/fetch.ts",
     "lint": "eslint . --fix",
     "test": "jest",
     "test:watch": "jest --watch"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.758.0",
+    "@aws-sdk/lib-storage": "^3.758.0",
     "@cosmology/db-client": "^0.1.0",
     "@interweb/fetch-api-client": "^0.6.0",
     "@interweb/http-errors": "^0.1.0",
