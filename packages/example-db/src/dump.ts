@@ -4,6 +4,13 @@ import { createReadStream, createWriteStream, statSync } from "fs";
 import { promisify } from "util";
 import { unlink } from "fs/promises";
 import * as path from "path";
+import { S3Client } from "@aws-sdk/client-s3";
+import { Upload } from "@aws-sdk/lib-storage";
+import { ReadStream } from "fs";
+import * as dotenv from "dotenv";
+
+// Load environment variables from .env file
+dotenv.config();
 
 const execAsync = promisify(exec);
 
@@ -13,6 +20,12 @@ interface BackupStats {
   compressionRatio: number;
   timestamp: string;
   durationMs: number;
+  s3Location?: string;
+}
+
+interface DumpOptions {
+  bucketName?: string;
+  skipUpload?: boolean;
 }
 
 async function formatSize(bytes: number): Promise<string> {
@@ -28,7 +41,57 @@ async function formatSize(bytes: number): Promise<string> {
   return `${size.toFixed(2)} ${units[unitIndex]}`;
 }
 
-async function dumpAndGzip(): Promise<BackupStats> {
+/**
+ * Upload a file to an S3 bucket
+ * @param filePath Path to the file to upload
+ * @param bucketName S3 bucket name
+ * @param key Object key (path in S3)
+ * @returns S3 URL of the uploaded file
+ */
+async function uploadToS3(
+  fileStream: ReadStream,
+  bucketName: string,
+  key: string
+): Promise<string> {
+  const client = new S3Client({
+    region: process.env.AWS_REGION || "us-east-1",
+    // AWS credentials are loaded automatically from environment variables or ~/.aws/credentials
+  });
+
+  const upload = new Upload({
+    client,
+    params: {
+      Bucket: bucketName,
+      Key: key,
+      Body: fileStream,
+      ContentType: "application/gzip",
+    },
+  });
+
+  // Upload the file and get the result
+  await upload.done();
+
+  // Return the S3 URL
+  return `s3://${bucketName}/${key}`;
+}
+
+/**
+ * Create a database dump, gzip it, and optionally upload to S3
+ * @param options Options for the dump operation
+ * @returns Statistics about the backup
+ */
+async function dumpAndGzip(
+  options?: DumpOptions | string
+): Promise<BackupStats> {
+  // Handle string argument (for backward compatibility)
+  if (typeof options === "string") {
+    options = { bucketName: options };
+  }
+
+  // Default options
+  const { bucketName = process.env.S3_BUCKET_NAME, skipUpload = false } =
+    options || {};
+
   const startTime = Date.now();
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const exportsDir = path.join(__dirname, "../exports");
@@ -63,9 +126,7 @@ async function dumpAndGzip(): Promise<BackupStats> {
     const compressionRatio = (1 - compressedSize / originalSize) * 100;
     const durationMs = Date.now() - startTime;
 
-    // Delete the original dump
-    await unlink(dumpFile);
-
+    // Stats object to be returned
     const stats: BackupStats = {
       originalSize,
       compressedSize,
@@ -73,6 +134,28 @@ async function dumpAndGzip(): Promise<BackupStats> {
       timestamp: new Date().toISOString(),
       durationMs,
     };
+
+    // Upload to S3 if a bucket name is provided and skipUpload is false
+    if (bucketName && !skipUpload) {
+      try {
+        const s3Key = path.basename(gzipFile);
+        const s3UploadStream = createReadStream(gzipFile);
+
+        console.log(`Uploading to S3 bucket: ${bucketName}, key: ${s3Key}...`);
+        stats.s3Location = await uploadToS3(s3UploadStream, bucketName, s3Key);
+        console.log(`Successfully uploaded to: ${stats.s3Location}`);
+      } catch (s3Error) {
+        console.error("S3 upload failed:", s3Error);
+        console.log("Continuing without S3 upload.");
+      }
+    } else if (skipUpload) {
+      console.log("S3 upload skipped as requested.");
+    } else if (!bucketName) {
+      console.log("No S3 bucket name provided. Skipping upload.");
+    }
+
+    // Delete the original dump
+    await unlink(dumpFile);
 
     // Log the backup statistics
     console.log("\nBackup Statistics:");
@@ -82,6 +165,9 @@ async function dumpAndGzip(): Promise<BackupStats> {
     console.log(`Compression Ratio: ${stats.compressionRatio.toFixed(2)}%`);
     console.log(`Duration: ${(stats.durationMs / 1000).toFixed(2)}s`);
     console.log(`Output File: ${path.relative(process.cwd(), gzipFile)}`);
+    if (stats.s3Location) {
+      console.log(`S3 Location: ${stats.s3Location}`);
+    }
 
     return stats;
   } catch (error) {
@@ -99,7 +185,26 @@ async function dumpAndGzip(): Promise<BackupStats> {
 
 // Execute if run directly
 if (require.main === module) {
-  dumpAndGzip()
+  // Check for --no-upload flag
+  const skipUpload = process.argv.includes("--no-upload");
+
+  // Get the S3 bucket name from environment variable or command line argument
+  const bucketNameArg = process.argv.find(
+    (arg) =>
+      !arg.startsWith("-") && arg !== process.argv[0] && arg !== process.argv[1]
+  );
+  const bucketName = bucketNameArg || process.env.S3_BUCKET_NAME;
+
+  if (!bucketName && !skipUpload) {
+    console.log(
+      "No S3 bucket name provided. The dump will be created but not uploaded to S3."
+    );
+    console.log(
+      "To upload to S3, set the S3_BUCKET_NAME environment variable or provide it as a command-line argument."
+    );
+  }
+
+  dumpAndGzip({ bucketName, skipUpload })
     .then(() => {
       process.exit(0);
     })
@@ -109,4 +214,4 @@ if (require.main === module) {
     });
 }
 
-export { dumpAndGzip, type BackupStats };
+export { dumpAndGzip, type BackupStats, type DumpOptions };
