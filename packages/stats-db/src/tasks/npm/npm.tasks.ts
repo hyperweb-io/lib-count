@@ -1,6 +1,10 @@
 import { execute as fetchPackages } from "./fetch-packages";
 import { execute as fetchDownloads } from "./fetch-downloads";
-import { generateReport } from "./npm.reports";
+import {
+  generateReport,
+  generateAndWriteBadges,
+  generateReadme,
+} from "./npm.reports";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -28,6 +32,16 @@ async function runCommand(command: string): Promise<void> {
       break;
     }
 
+    case "generate:badges": {
+      await generateAndWriteBadges();
+      break;
+    }
+
+    case "generate:readme": {
+      await generateReadme();
+      break;
+    }
+
     default:
       console.error(`Unknown command: ${command}`);
       process.exit(1);
@@ -38,7 +52,7 @@ if (require.main === module) {
   const command = process.argv[2];
   if (!command) {
     console.error(
-      "Please provide a command: fetch:packages, fetch:downloads, or fetch:downloads:reset"
+      "Please provide a command: fetch:packages, fetch:downloads, fetch:downloads:reset, generate:report, generate:badges, or generate:readme"
     );
     process.exit(1);
   }
