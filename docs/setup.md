@@ -29,7 +29,7 @@ yarn --version
 
 This monorepo contains multiple packages:
 
-- `packages/stats-db`: Example database utilities
+- `packages/stats-db`: Statistic database
 - `packages/client`: Database client
 
 To work on a specific package:
@@ -61,6 +61,52 @@ DATABASE_URL=postgres://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAM
 # AWS configuration for S3 uploads (if needed)
 AWS_REGION=us-east-1
 S3_BUCKET_NAME=your-bucket-name
+```
+
+## Docker Setup
+
+This project includes a Docker Compose configuration to help you quickly set up a PostgreSQL database with PostGIS extensions for spatial data.
+
+### Prerequisites
+
+- [Docker](https://docs.docker.com/get-docker/)
+- [Docker Compose](https://docs.docker.com/compose/install/)
+
+### Running the Database Container
+
+Start the PostgreSQL container:
+
+```sh
+# Start PostgreSQL container in the background
+docker-compose up -d
+
+# Check if the container is running
+docker-compose ps
+```
+
+### Database Connection Details
+
+The PostgreSQL container will be accessible with these credentials:
+
+- **Host**: localhost
+- **Port**: 5432
+- **User**: postgres
+- **Password**: password
+- **Connection URL**: postgres://postgres:password@localhost:5432/example_db
+
+These details match the environment variables in the `.env` file example above.
+
+### Managing the Container
+
+```sh
+# Stop the PostgreSQL container
+docker-compose stop
+
+# Stop and remove the container
+docker-compose down
+
+# View container logs
+docker-compose logs postgres
 ```
 
 ## see example in packages
