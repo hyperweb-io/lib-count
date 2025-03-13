@@ -34,7 +34,11 @@ export type BlacklistConfig = {
 
 export const blacklistConfig: BlacklistConfig = {
   namespaces: ["@chainmos"],
-  packages: [],
+  packages: [
+    // For some reason, these 2 packages are causing issues with the report generation, these can't be found in npm api
+    "@pgsql/deparser",
+    "strfy-json",
+  ],
 };
 
 // Structured as categories with their respective packages
