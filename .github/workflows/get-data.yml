@@ -81,3 +81,14 @@ jobs:
           # AWS Credentials
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_FE_DEPLOYER_ACCESS }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_FE_DEPLOYER_SECRET }}
+
+      - name: Upload artifacts 📦
+        uses: actions/upload-artifact@v4
+        with:
+          name: lib-count-badges
+          path: |
+            badges/lib-count/total_downloads.json
+            badges/lib-count/monthly_downloads.json
+            badges/lib-count/utils_category.json
+            badges/lib-count/launchql_category.json
+            badges/lib-count/hyperweb_category.json
