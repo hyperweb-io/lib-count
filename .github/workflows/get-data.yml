@@ -61,9 +61,15 @@ jobs:
 
       - name: Run it 🚀
         run: |
+          yarn build
           cd ./packages/stats-db
           ./scripts/schema.sh
-          yarn dev
+          
+          yarn npm:fetch:packages
+          yarn npm:fetch:downloads
+          yarn npm:report
+          yarn npm:badges
+          yarn npm:readme
         env:
           # GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DATABASE_URL: postgres://postgres:password@localhost:5432/example_db

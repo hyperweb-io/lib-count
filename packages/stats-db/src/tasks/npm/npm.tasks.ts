@@ -1,5 +1,6 @@
 import { execute as fetchPackages } from "./fetch-packages";
 import { execute as fetchDownloads } from "./fetch-downloads";
+
 import {
   generateReport,
   generateAndWriteBadges,
@@ -27,6 +28,7 @@ async function runCommand(command: string): Promise<void> {
     case "generate:report": {
       const report = await generateReport();
       const reportPath = path.join(__dirname, "../../../exports/npm-report.md");
+      fs.mkdirSync(path.dirname(reportPath), { recursive: true });
       fs.writeFileSync(reportPath, report);
       console.log(`Report generated at: ${reportPath}`);
       break;
