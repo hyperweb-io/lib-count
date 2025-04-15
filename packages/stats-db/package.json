@@ -27,7 +27,6 @@
     "build:dev": "npm run clean; tsc --declarationMap; tsc -p tsconfig.esm.json; npm run copy",
     "npm:fetch:packages": "DATABASE_URL=postgres://postgres:password@localhost:5432/example_db ts-node ./src/tasks/npm/npm.tasks.ts fetch:packages",
     "npm:fetch:downloads": "DATABASE_URL=postgres://postgres:password@localhost:5432/example_db ts-node ./src/tasks/npm/npm.tasks.ts fetch:downloads",
-    "npm:fetch:downloads:reset": "DATABASE_URL=postgres://postgres:password@localhost:5432/example_db ts-node ./src/tasks/npm/npm.tasks.ts fetch:downloads:reset",
     "npm:report": "DATABASE_URL=postgres://postgres:password@localhost:5432/example_db ts-node ./src/tasks/npm/npm.tasks.ts generate:report",
     "npm:badges": "DATABASE_URL=postgres://postgres:password@localhost:5432/example_db ts-node ./src/tasks/npm/npm.tasks.ts generate:badges",
     "npm:readme": "DATABASE_URL=postgres://postgres:password@localhost:5432/example_db ts-node ./src/tasks/npm/npm.tasks.ts generate:readme",
