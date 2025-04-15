@@ -18,10 +18,6 @@ async function runCommand(command: string): Promise<void> {
       break;
 
     case "fetch:downloads":
-      await fetchDownloads();
-      break;
-
-    case "fetch:downloads:reset":
       await fetchDownloads({ resetDb: true });
       break;
 
