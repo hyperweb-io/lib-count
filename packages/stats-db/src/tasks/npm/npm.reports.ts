@@ -480,7 +480,6 @@ async function generateBadges(
   const productsOutputDir = path.join(basePath, "products");
 
   console.log(`Badges will be saved to: ${basePath}`);
-  console.log(`Repository: hyperweb-io/hyperweb-contributions`);
 
   // Generate total downloads badge
   const totalDownloads = createBadgeJson(
@@ -517,7 +516,7 @@ async function generateBadges(
 
   // Web2 (launchql) category badge - fixing color from old implementation
   const web2Badge = createBadgeJson(
-    "Web2",
+    "web2",
     `${formatNumberForBadge(totals.web2.total)} downloads`,
     "#01A1FF" // Adding # prefix for consistency
   );
@@ -531,9 +530,9 @@ async function generateBadges(
   );
   writeBadgeFile(libCountOutputDir, "utils_category.json", utilsBadge);
 
-  // Hyperweb category - using the web3 total since it's a synonym for all web3 packages
+  // Web3 category - using the web3 total since it's a synonym for all web3 packages
   const hyperwebBadge = createBadgeJson(
-    "Hyperweb",
+    "web3",
     `${formatNumberForBadge(totals.web3.total)} downloads`,
     "#A96DFF" // Using the same color as web3
   );
