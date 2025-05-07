@@ -538,9 +538,6 @@ async function generateBadges(
   );
   writeBadgeFile(libCountOutputDir, "hyperweb_category.json", hyperwebBadge);
 
-  // Get current timestamp for historical badges
-  const timestamp = getCurrentTimestamp();
-
   // Generate per-product badges
   console.log("Generating per-product badges...");
 
@@ -589,58 +586,6 @@ async function generateBadges(
       amount: stats.weekly,
     };
     writeBadgeFile(productOutputDir, "weekly-num.json", productWeeklyNum);
-
-    // Create historical badges for this product
-    const productHistoricalDir = path.join(
-      productsOutputDir,
-      "historical",
-      category
-    );
-    if (!fs.existsSync(productHistoricalDir)) {
-      fs.mkdirSync(productHistoricalDir, { recursive: true });
-    }
-
-    // Write historical data with timestamp
-    const historicalTotal = {
-      period: "total",
-      amount: stats.total,
-      timestamp,
-    };
-    writeBadgeFile(
-      productHistoricalDir,
-      `total-${timestamp}.json`,
-      historicalTotal
-    );
-
-    const historicalMonthly = {
-      period: "monthly",
-      amount: stats.monthly,
-      timestamp,
-    };
-    writeBadgeFile(
-      productHistoricalDir,
-      `monthly-${timestamp}.json`,
-      historicalMonthly
-    );
-
-    const historicalWeekly = {
-      period: "weekly",
-      amount: stats.weekly,
-      timestamp,
-    };
-    writeBadgeFile(
-      productHistoricalDir,
-      `weekly-${timestamp}.json`,
-      historicalWeekly
-    );
-  }
-
-  // Create historical folder for future tracking if it doesn't exist
-  const historicalDir = path.join(productsOutputDir, "historical");
-  if (!fs.existsSync(historicalDir)) {
-    fs.mkdirSync(historicalDir, { recursive: true });
-    console.log(`Created historical directory: ${historicalDir}`);
-  }
 
   console.log(
     "All badges generated successfully for hyperweb-contributions repository"
@@ -1053,7 +998,7 @@ async function generateReadme(): Promise<void> {
       if (fs.existsSync(productsDir)) {
         const productCategories = fs
           .readdirSync(productsDir)
-          .filter((dir) => !dir.includes(".") && dir !== "historical");
+          .filter((dir) => !dir.includes("."));
 
         console.log(
           `Found ${productCategories.length} product categories with badges`
