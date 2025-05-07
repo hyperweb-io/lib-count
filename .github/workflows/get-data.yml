@@ -6,6 +6,8 @@ on:
   # pull_request:
   #   branches: [ main ]
   workflow_dispatch:
+  schedule:
+    - cron: "0 0 * * 1" # Runs at 00:00 UTC on Monday
 
 jobs:
   container-job:
@@ -31,7 +33,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: '21'
+          node-version: "21"
 
       - name: Install dependencies
         run: yarn install
@@ -49,7 +51,7 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_FE_DEPLOYER_ACCESS }}
           aws-secret-access-key: ${{ secrets.AWS_FE_DEPLOYER_SECRET }}
-          aws-region: 'us-east-1'
+          aws-region: "us-east-1"
 
       - name: Install AWS CLI v2
         run: |
@@ -64,7 +66,7 @@ jobs:
           yarn build
           cd ./packages/stats-db
           ./scripts/schema.sh
-          
+
           yarn npm:fetch:packages
           yarn npm:fetch:downloads
           yarn npm:report

@@ -586,6 +586,7 @@ async function generateBadges(
       amount: stats.weekly,
     };
     writeBadgeFile(productOutputDir, "weekly-num.json", productWeeklyNum);
+  }
 
   console.log(
     "All badges generated successfully for hyperweb-contributions repository"
