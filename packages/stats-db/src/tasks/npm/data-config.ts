@@ -74,7 +74,6 @@ export const packages: Packages = {
     "@interchain-kit/core",
     "@interchain-kit/react",
     "@interchain-kit/vue",
-
     "cosmos-kit",
     "@cosmos-kit/core",
     "@cosmos-kit/react",
