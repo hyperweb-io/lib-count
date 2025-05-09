@@ -1,4 +1,4 @@
-# hyperweb-statistics
+# lib-count
 
 ## Initialize repository with Yarn 1
 
@@ -9,8 +9,8 @@ This project uses Yarn 1 for dependency management and follows a monorepo struct
 npm install -g yarn
 
 # Clone the repository (if you haven't already)
-git clone https://github.com/your-org/hyperweb-statistics.git
-cd hyperweb-statistics
+git clone https://github.com/your-org/lib-count.git
+cd lib-count
 
 # Install all dependencies across packages
 yarn install
@@ -122,7 +122,7 @@ The schema script provides options to reset all schemas or reset specific schema
 ```sh
 # Set PostgreSQL connection parameters
 export DB_NAME="example_db"
-export DB_USER="postgres" 
+export DB_USER="postgres"
 export DB_PASSWORD="password"
 export DB_HOST="localhost"
 export DB_PORT="5432"

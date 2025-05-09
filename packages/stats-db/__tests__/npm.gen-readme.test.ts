@@ -217,7 +217,7 @@ describe("README Generation Comparison", () => {
 
     const mockPackageJson = {
       repository: {
-        url: "git+https://github.com/hyperweb-io/hyperweb-statistics.git",
+        url: "git+https://github.com/hyperweb-io/lib-count.git",
       },
     };
     (fs.readFileSync as Mock).mockImplementation((filePath: string) => {

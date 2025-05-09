@@ -1,11 +1,11 @@
 {
-  "name": "hyperweb-statistics",
+  "name": "lib-count",
   "version": "0.0.1",
   "author": "Dan Lynch <pyramation@gmail.com>",
   "private": true,
   "repository": {
     "type": "git",
-    "url": "https://github.com/hyperweb-io/hyperweb-statistics"
+    "url": "https://github.com/hyperweb-io/lib-count"
   },
   "license": "SEE LICENSE IN LICENSE",
   "publishConfig": {

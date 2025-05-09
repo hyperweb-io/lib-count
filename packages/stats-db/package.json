@@ -6,7 +6,7 @@
   "main": "index.js",
   "module": "esm/index.js",
   "types": "index.d.ts",
-  "homepage": "https://github.com/hyperweb-io/hyperweb-statistics",
+  "homepage": "https://github.com/hyperweb-io/lib-count",
   "license": "SEE LICENSE IN LICENSE",
   "publishConfig": {
     "access": "public",
@@ -14,10 +14,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/hyperweb-io/hyperweb-statistics"
+    "url": "https://github.com/hyperweb-io/lib-count"
   },
   "bugs": {
-    "url": "https://github.com/hyperweb-io/hyperweb-statistics/issues"
+    "url": "https://github.com/hyperweb-io/lib-count/issues"
   },
   "scripts": {
     "copy": "copyfiles -f ../../LICENSE README.md package.json dist",
