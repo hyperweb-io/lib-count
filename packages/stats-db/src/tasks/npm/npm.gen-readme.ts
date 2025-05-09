@@ -186,7 +186,7 @@ async function getLifetimeDownloadsByCategory(
 // --- README Generation specific functions ---
 
 function generateBadgesSection(repoName: string): string {
-  const rawBaseRepoUrl = `https://raw.githubusercontent.com/${repoName}/main/badges/lib-count/`;
+  const rawBaseRepoUrl = `https://raw.githubusercontent.com/${repoName}/main/output/badges/lib-count/`;
   const encodedTotalDownloadsUrl = encodeURIComponent(
     `${rawBaseRepoUrl}total_downloads.json`
   );

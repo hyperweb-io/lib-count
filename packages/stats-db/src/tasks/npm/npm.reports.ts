@@ -454,7 +454,7 @@ async function generateBadges(
 
   // Set output directory for badges - using 'badges' as the top-level folder at project root
   // Updated to use hyperweb-contributions repository structure
-  const basePath = path.resolve(__dirname, "../../../../../badges");
+  const basePath = path.resolve(__dirname, "../../../../../output/badges");
   const libCountOutputDir = path.join(basePath, "lib-count");
   const productsOutputDir = path.join(basePath, "products");
 
