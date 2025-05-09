@@ -4,23 +4,23 @@
 <p align="center" width="100%">
    <img src="https://raw.githubusercontent.com/hyperweb-io/hyperweb-statistics/refs/heads/main/assets/logo.svg" alt="hyperweb" width="80"><br />
    <a href="https://github.com/hyperweb-io/hyperweb-statistics">
-      <img height="20" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fhyperweb-io%2Fhyperweb-statistics%2Fmain%2Foutput%2Fbadges%2Flib-count%2Ftotal_downloads.json"/>
+      <img height="20" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fhyperweb-io%2Fhyperweb-statistics%2Fmain%2Foutput%2Fbadges%2Ftotal_downloads.json"/>
    </a>
    <a href="https://github.com/hyperweb-io/hyperweb-statistics">
-      <img height="20" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fhyperweb-io%2Fhyperweb-statistics%2Fmain%2Foutput%2Fbadges%2Flib-count%2Fmonthly_downloads.json"/>
+      <img height="20" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fhyperweb-io%2Fhyperweb-statistics%2Fmain%2Foutput%2Fbadges%2Fmonthly_downloads.json"/>
    </a>
    <a href="https://github.com/hyperweb-io/hyperweb-statistics">
-      <img height="20" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fhyperweb-io%2Fhyperweb-statistics%2Fmain%2Foutput%2Fbadges%2Flib-count%2Fweekly_downloads.json"/>
+      <img height="20" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fhyperweb-io%2Fhyperweb-statistics%2Fmain%2Foutput%2Fbadges%2Fweekly_downloads.json"/>
    </a>
    <br>
    <a href="https://github.com/hyperweb-io/hyperweb-statistics">
-      <img height="20" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fhyperweb-io%2Fhyperweb-statistics%2Fmain%2Foutput%2Fbadges%2Flib-count%2Flaunchql_category.json"/>
+      <img height="20" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fhyperweb-io%2Fhyperweb-statistics%2Fmain%2Foutput%2Fbadges%2Flaunchql_category.json"/>
    </a>
    <a href="https://github.com/hyperweb-io/hyperweb-statistics">
-      <img height="20" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fhyperweb-io%2Fhyperweb-statistics%2Fmain%2Foutput%2Fbadges%2Flib-count%2Fhyperweb_category.json"/>
+      <img height="20" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fhyperweb-io%2Fhyperweb-statistics%2Fmain%2Foutput%2Fbadges%2Fhyperweb_category.json"/>
    </a>
    <a href="https://github.com/hyperweb-io/hyperweb-statistics">
-      <img height="20" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fhyperweb-io%2Fhyperweb-statistics%2Fmain%2Foutput%2Fbadges%2Flib-count%2Futils_category.json"/>
+      <img height="20" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fhyperweb-io%2Fhyperweb-statistics%2Fmain%2Foutput%2Fbadges%2Futils_category.json"/>
    </a>
 </p>
 
@@ -480,4 +480,4 @@ To the amazing Cosmology community: thank you for being part of our journey. Wit
 Let's build the future, together. 🚀
 
 
-<!-- README.md automatically generated on 2025-05-09T07:31:46.582Z from hyperweb-statistics repository with latest download stats -->
+<!-- README.md automatically generated on 2025-05-09T07:34:56.427Z from hyperweb-statistics repository with latest download stats -->
