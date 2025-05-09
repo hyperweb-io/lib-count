@@ -2,7 +2,7 @@ import { execute as fetchPackages } from "./fetch-packages";
 import { execute as fetchDownloads } from "./fetch-downloads";
 
 import { generateReport, generateAndWriteBadges } from "./npm.reports";
-import { generateAndWriteReadmeNew } from "./npm.gen-readme";
+import { generateAndWriteReadme } from "./npm.gen-readme";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -33,7 +33,7 @@ async function runCommand(command: string): Promise<void> {
     }
 
     case "generate:readme": {
-      await generateAndWriteReadmeNew();
+      await generateAndWriteReadme();
       break;
     }
 

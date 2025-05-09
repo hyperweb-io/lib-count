@@ -396,7 +396,7 @@ function generateTimestampComment(repoBaseName: string): string {
 
 export async function generateReadmeNew(): Promise<string> {
   const db = new Database();
-  let readmeContent = "# Hyperweb\n"; // No trailing space after # Hyperweb
+  let readmeContent = "# Hyperweb\n";
   let repoName = "hyperweb-io/hyperweb-statistics";
   let repoBaseName = "hyperweb-statistics";
 
@@ -448,17 +448,17 @@ export async function generateReadmeNew(): Promise<string> {
     });
   } catch (error) {
     console.error("Failed to fetch data for README generation:", error);
-    return "# Hyperweb\n\nError generating README content."; // Keep title consistent on error
+    return "# Hyperweb\n\nError generating README content.";
   }
 
   // Assemble README sections
-  readmeContent += generateBadgesSection(repoName); // Ends with </p>\n\n
-  readmeContent += generateIntroSection(); // Ends with ...Announcement</a>\n\n
-  readmeContent += generateStackIntro(); // Starts with \n---\n (so the double \n from Intro creates a blank line)
+  readmeContent += generateBadgesSection(repoName);
+  readmeContent += generateIntroSection();
+  readmeContent += generateStackIntro();
   readmeContent += generateToolsTable(repoName, categoryStatsMap);
 
   // Generate and add Table of Contents
-  const categoryKeys = Object.keys(packages); // Get category names from data-config
+  const categoryKeys = Object.keys(packages);
   readmeContent += generateToc(categoryKeys);
 
   // Add individual category tables
@@ -476,10 +476,10 @@ export async function generateReadmeNew(): Promise<string> {
   readmeContent += generateThankYou();
   readmeContent += generateTimestampComment(repoBaseName);
 
-  return "\n" + readmeContent; // Add leading newline to match old output
+  return "\n" + readmeContent;
 }
 
-export async function generateAndWriteReadmeNew(): Promise<void> {
+export async function generateAndWriteReadme(): Promise<void> {
   try {
     const readme = await generateReadmeNew();
     fs.writeFileSync(
