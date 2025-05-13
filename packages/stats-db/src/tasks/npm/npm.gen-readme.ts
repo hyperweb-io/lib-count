@@ -254,9 +254,9 @@ function generateOverallStatsTable(totals: TotalStats): string {
     `## Overall Download Statistics\n`,
     "| Category | Total | Monthly | Weekly |",
     "| ------- | ------ | ------- | ----- |",
-    `| **Grand Total** | ${formatNumber(totals.total.total)} | ${formatNumber(totals.total.monthly)} | ${formatNumber(totals.total.weekly)} |`,
-    `| Web2 (LaunchQL) | ${formatNumber(totals.web2.total)} | ${formatNumber(totals.web2.monthly)} | ${formatNumber(totals.web2.weekly)} |`,
-    `| Web3 (Hyperweb, etc.) | ${formatNumber(totals.web3.total)} | ${formatNumber(totals.web3.monthly)} | ${formatNumber(totals.web3.weekly)} |`,
+    `| **Total** | ${formatNumber(totals.total.total)} | ${formatNumber(totals.total.monthly)} | ${formatNumber(totals.total.weekly)} |`,
+    `| Web2 | ${formatNumber(totals.web2.total)} | ${formatNumber(totals.web2.monthly)} | ${formatNumber(totals.web2.weekly)} |`,
+    `| Web3 | ${formatNumber(totals.web3.total)} | ${formatNumber(totals.web3.monthly)} | ${formatNumber(totals.web3.weekly)} |`,
     `| Utilities | ${formatNumber(totals.utils.total)} | ${formatNumber(totals.utils.monthly)} | ${formatNumber(totals.utils.weekly)} |`,
   ];
   return lines.join("\n") + "\n\n"; // Ensure blank line after the table

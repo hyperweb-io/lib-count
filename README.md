@@ -61,9 +61,9 @@ A unified toolkit for building applications and smart contracts in the Interchai
 
 | Category | Total | Monthly | Weekly |
 | ------- | ------ | ------- | ----- |
-| **Grand Total** | 65,828,752 | 3,016,467 | 724,290 |
-| Web2 (LaunchQL) | 21,712,066 | 1,348,542 | 339,542 |
-| Web3 (Hyperweb, etc.) | 36,203,225 | 1,568,618 | 364,607 |
+| **Total** | 65,828,752 | 3,016,467 | 724,290 |
+| Web2 | 21,712,066 | 1,348,542 | 339,542 |
+| Web3 | 36,203,225 | 1,568,618 | 364,607 |
 | Utilities | 2,549,858 | 99,307 | 20,141 |
 
 ## Table of Contents
@@ -489,4 +489,4 @@ To the amazing Cosmology community: thank you for being part of our journey. Wit
 Let's build the future, together. 🚀
 
 
-<!-- README.md automatically generated on 2025-05-13T19:22:16.481Z from lib-count repository with latest download stats -->
+<!-- README.md automatically generated on 2025-05-13T19:29:16.145Z from lib-count repository with latest download stats -->
