@@ -1,10 +1,8 @@
 name: Fetch Contribution Data 🛠️
 
 on:
-  # push:
-  #   branches: [ main ]
-  # pull_request:
-  #   branches: [ main ]
+  push:
+    branches: [main]
   workflow_dispatch:
   schedule:
     - cron: "0 0 * * 1" # Runs at 00:00 UTC on Monday
@@ -28,12 +26,12 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
-          node-version: "21"
+          node-version: "22"
 
       - name: Install dependencies
         run: yarn install
@@ -47,7 +45,7 @@ jobs:
           done
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v1
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_FE_DEPLOYER_ACCESS }}
           aws-secret-access-key: ${{ secrets.AWS_FE_DEPLOYER_SECRET }}
@@ -63,17 +61,28 @@ jobs:
 
       - name: Run it 🚀
         run: |
+          echo "Building project..."
           yarn build
-          cd ./packages/stats-db
-          ./scripts/schema.sh
 
+          echo "Setting up database schemas..."
+          cd ./packages/stats-db
+          ./scripts/schema.sh -s npm
+          ./scripts/schema.sh -s github
+
+          echo "Fetching NPM data..."
           yarn npm:fetch:packages
           yarn npm:fetch:downloads
           yarn npm:report
           yarn npm:badges
           yarn npm:readme
+
+          echo "Fetching GitHub data..."
+          yarn gh:fetch
+
+          echo "Uploading database dump to S3..."
+          yarn db:dump:s3
         env:
-          # GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DATABASE_URL: postgres://postgres:password@localhost:5432/example_db
 
           # AWS S3 Configuration
@@ -89,8 +98,8 @@ jobs:
         with:
           name: lib-count-badges
           path: |
-            badges/lib-count/total_downloads.json
-            badges/lib-count/monthly_downloads.json
-            badges/lib-count/utils_category.json
-            badges/lib-count/launchql_category.json
-            badges/lib-count/hyperweb_category.json
+            output/badges/lib-count/total_downloads.json
+            output/badges/lib-count/monthly_downloads.json
+            output/badges/lib-count/utils_category.json
+            output/badges/lib-count/launchql_category.json
+            output/badges/lib-count/hyperweb_category.json
