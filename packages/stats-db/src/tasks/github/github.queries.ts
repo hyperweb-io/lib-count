@@ -1,5 +1,92 @@
 import { PoolClient } from "pg";
 
+// Cleanup queries
+export async function clearAllGitHubData(client: any): Promise<void> {
+  console.log("🧹 Clearing all GitHub data...");
+
+  const deleteOperations = [
+    { table: "github.daily_contribution", description: "daily contributions" },
+    {
+      table: "github.author_organization_history",
+      description: "author organization history",
+    },
+    {
+      table: "github.contribution_summary",
+      description: "contribution summaries",
+    },
+    {
+      table: "github.organization_connection",
+      description: "organization connections",
+    },
+    { table: "github.author_email", description: "author emails" },
+    { table: "github.repository", description: "repositories" },
+    { table: "github.author", description: "authors" },
+    { table: "github.organization", description: "organizations" },
+  ];
+
+  try {
+    // Method 1: Delete in correct dependency order
+    // Delete child records before parent records to avoid foreign key violations
+    console.log("   🔄 Using ordered deletion method...");
+
+    for (const operation of deleteOperations) {
+      const result = await client.query(`DELETE FROM ${operation.table}`);
+      console.log(
+        `   ✅ Cleared ${operation.description} (${result.rowCount || 0} rows)`
+      );
+    }
+
+    console.log("🧹 All GitHub data cleared successfully!\n");
+  } catch (error) {
+    console.error(
+      "❌ Error during ordered cleanup, trying alternative method..."
+    );
+    console.error(
+      "   Error details:",
+      error instanceof Error ? error.message : String(error)
+    );
+
+    // Method 2: Temporarily disable foreign key constraints if needed
+    try {
+      console.log("   🔧 Temporarily disabling foreign key constraints...");
+      await client.query("SET session_replication_role = replica");
+      console.log("   🔧 Foreign key constraints disabled");
+
+      // Delete all tables in any order since constraints are disabled
+      for (const operation of deleteOperations) {
+        const result = await client.query(`DELETE FROM ${operation.table}`);
+        console.log(
+          `   ✅ Cleared ${operation.description} (${result.rowCount || 0} rows)`
+        );
+      }
+
+      // Re-enable foreign key constraints
+      await client.query("SET session_replication_role = DEFAULT");
+      console.log("   🔧 Re-enabled foreign key constraints");
+      console.log(
+        "🧹 All GitHub data cleared successfully (alternative method)!\n"
+      );
+    } catch (fallbackError) {
+      // Ensure constraints are re-enabled even if cleanup fails
+      try {
+        await client.query("SET session_replication_role = DEFAULT");
+      } catch (resetError) {
+        console.error(
+          "❌ Failed to reset foreign key constraints:",
+          resetError instanceof Error ? resetError.message : String(resetError)
+        );
+      }
+
+      const errorMessage =
+        fallbackError instanceof Error
+          ? fallbackError.message
+          : String(fallbackError);
+      console.error("❌ Both cleanup methods failed:", errorMessage);
+      throw new Error(`GitHub data cleanup failed: ${errorMessage}`);
+    }
+  }
+}
+
 // Organization queries
 export async function insertOrganization(
   client: any,
@@ -48,25 +135,81 @@ export async function insertAuthor(
     login: string;
     name?: string;
     avatar_url?: string;
+    primary_email?: string;
   }
 ): Promise<{ id: string }> {
   const result = await client.query(
     `
     INSERT INTO github.author (
-      github_id, login, name, avatar_url,
+      github_id, login, name, avatar_url, primary_email,
       created_at, updated_at
     )
-    VALUES ($1, $2, $3, $4, NOW(), NOW())
+    VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
     ON CONFLICT (github_id) DO UPDATE SET
       login = EXCLUDED.login,
       name = COALESCE(EXCLUDED.name, github.author.name),
       avatar_url = COALESCE(EXCLUDED.avatar_url, github.author.avatar_url),
+      primary_email = COALESCE(EXCLUDED.primary_email, github.author.primary_email),
       updated_at = NOW()
     RETURNING id
     `,
-    [author.github_id, author.login, author.name, author.avatar_url]
+    [
+      author.github_id,
+      author.login,
+      author.name,
+      author.avatar_url,
+      author.primary_email,
+    ]
   );
   return result.rows[0];
+}
+
+// Author email queries
+export async function insertOrUpdateAuthorEmail(
+  client: any,
+  data: {
+    author_id: string;
+    email: string;
+    commit_date: Date;
+  }
+): Promise<void> {
+  await client.query(
+    `
+    INSERT INTO github.author_email (
+      author_id, email, commit_count, first_seen_at, last_seen_at,
+      created_at, updated_at
+    )
+    VALUES ($1, $2, 1, $3, $3, NOW(), NOW())
+    ON CONFLICT (author_id, email) DO UPDATE SET
+      commit_count = github.author_email.commit_count + 1,
+      last_seen_at = GREATEST(EXCLUDED.last_seen_at, github.author_email.last_seen_at),
+      first_seen_at = LEAST(EXCLUDED.first_seen_at, github.author_email.first_seen_at),
+      updated_at = NOW()
+    `,
+    [data.author_id, data.email, data.commit_date]
+  );
+}
+
+export async function updateAuthorPrimaryEmail(
+  client: any,
+  authorId: string
+): Promise<void> {
+  // Update the author's primary email to be the most frequently used email
+  await client.query(
+    `
+    UPDATE github.author 
+    SET primary_email = (
+      SELECT email 
+      FROM github.author_email 
+      WHERE author_id = $1 
+      ORDER BY commit_count DESC, last_seen_at DESC 
+      LIMIT 1
+    ),
+    updated_at = NOW()
+    WHERE id = $1
+    `,
+    [authorId]
+  );
 }
 
 // Repository queries
@@ -80,6 +223,10 @@ export async function insertRepository(
     url: string;
     is_fork: boolean;
     fork_date?: string | Date;
+    parent_repo?: string;
+    source_repo?: string;
+    fork_detection_method?: string;
+    fork_detection_confidence?: string;
     owner_id: string;
     stars_count: number;
     forks_count: number;
@@ -91,10 +238,12 @@ export async function insertRepository(
     `
     INSERT INTO github.repository (
       github_id, name, full_name, description, url,
-      is_fork, fork_date, owner_id, stars_count, forks_count,
+      is_fork, fork_date, parent_repo, source_repo, 
+      fork_detection_method, fork_detection_confidence,
+      owner_id, stars_count, forks_count,
       commits_count, primary_language, created_at, updated_at
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW())
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW(), NOW())
     ON CONFLICT (github_id) DO UPDATE SET
       name = EXCLUDED.name,
       full_name = EXCLUDED.full_name,
@@ -102,6 +251,10 @@ export async function insertRepository(
       url = EXCLUDED.url,
       is_fork = EXCLUDED.is_fork,
       fork_date = COALESCE(EXCLUDED.fork_date, github.repository.fork_date),
+      parent_repo = COALESCE(EXCLUDED.parent_repo, github.repository.parent_repo),
+      source_repo = COALESCE(EXCLUDED.source_repo, github.repository.source_repo),
+      fork_detection_method = COALESCE(EXCLUDED.fork_detection_method, github.repository.fork_detection_method),
+      fork_detection_confidence = COALESCE(EXCLUDED.fork_detection_confidence, github.repository.fork_detection_confidence),
       owner_id = EXCLUDED.owner_id,
       stars_count = EXCLUDED.stars_count,
       forks_count = EXCLUDED.forks_count,
@@ -118,6 +271,10 @@ export async function insertRepository(
       repo.url,
       repo.is_fork,
       repo.fork_date ? new Date(repo.fork_date) : null,
+      repo.parent_repo,
+      repo.source_repo,
+      repo.fork_detection_method,
+      repo.fork_detection_confidence,
       repo.owner_id,
       repo.stars_count,
       repo.forks_count,
