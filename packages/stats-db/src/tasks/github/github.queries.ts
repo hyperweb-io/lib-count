@@ -18,6 +18,7 @@ export async function clearAllGitHubData(client: any): Promise<void> {
       table: "github.organization_connection",
       description: "organization connections",
     },
+    { table: "github.author_email", description: "author emails" },
     { table: "github.repository", description: "repositories" },
     { table: "github.author", description: "authors" },
     { table: "github.organization", description: "organizations" },
@@ -134,25 +135,81 @@ export async function insertAuthor(
     login: string;
     name?: string;
     avatar_url?: string;
+    primary_email?: string;
   }
 ): Promise<{ id: string }> {
   const result = await client.query(
     `
     INSERT INTO github.author (
-      github_id, login, name, avatar_url,
+      github_id, login, name, avatar_url, primary_email,
       created_at, updated_at
     )
-    VALUES ($1, $2, $3, $4, NOW(), NOW())
+    VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
     ON CONFLICT (github_id) DO UPDATE SET
       login = EXCLUDED.login,
       name = COALESCE(EXCLUDED.name, github.author.name),
       avatar_url = COALESCE(EXCLUDED.avatar_url, github.author.avatar_url),
+      primary_email = COALESCE(EXCLUDED.primary_email, github.author.primary_email),
       updated_at = NOW()
     RETURNING id
     `,
-    [author.github_id, author.login, author.name, author.avatar_url]
+    [
+      author.github_id,
+      author.login,
+      author.name,
+      author.avatar_url,
+      author.primary_email,
+    ]
   );
   return result.rows[0];
+}
+
+// Author email queries
+export async function insertOrUpdateAuthorEmail(
+  client: any,
+  data: {
+    author_id: string;
+    email: string;
+    commit_date: Date;
+  }
+): Promise<void> {
+  await client.query(
+    `
+    INSERT INTO github.author_email (
+      author_id, email, commit_count, first_seen_at, last_seen_at,
+      created_at, updated_at
+    )
+    VALUES ($1, $2, 1, $3, $3, NOW(), NOW())
+    ON CONFLICT (author_id, email) DO UPDATE SET
+      commit_count = github.author_email.commit_count + 1,
+      last_seen_at = GREATEST(EXCLUDED.last_seen_at, github.author_email.last_seen_at),
+      first_seen_at = LEAST(EXCLUDED.first_seen_at, github.author_email.first_seen_at),
+      updated_at = NOW()
+    `,
+    [data.author_id, data.email, data.commit_date]
+  );
+}
+
+export async function updateAuthorPrimaryEmail(
+  client: any,
+  authorId: string
+): Promise<void> {
+  // Update the author's primary email to be the most frequently used email
+  await client.query(
+    `
+    UPDATE github.author 
+    SET primary_email = (
+      SELECT email 
+      FROM github.author_email 
+      WHERE author_id = $1 
+      ORDER BY commit_count DESC, last_seen_at DESC 
+      LIMIT 1
+    ),
+    updated_at = NOW()
+    WHERE id = $1
+    `,
+    [authorId]
+  );
 }
 
 // Repository queries

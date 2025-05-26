@@ -6,23 +6,27 @@ import { organizations, fetchTypes, knownForks } from "./data-config";
 import { createOctokitClient, makeApiCall } from "./octokit-client";
 import { detectRepositoryFork, ForkDetectionOptions } from "./fork-detection";
 
-const BATCH_SIZE = 5; // Reduced from 100 to 5 for better rate limit handling
-
 // Fetch Configuration
 // Configure data collection limits and behavior
 // Set numeric values to null to fetch all data (production mode)
 const FETCH_CONFIG: {
+  BATCH_SIZE: number;
   CLEAR_DATA_BEFORE_FETCH: boolean;
   MAX_REPOS_PER_ORG: number | null;
   MAX_CONTRIBUTORS_PER_REPO: number | null;
   ENABLE_DETAILED_LOGGING: boolean;
   FILTER_BOTS: boolean;
+  SAMPLE_COMMITS_FOR_EMAILS: boolean;
+  MAX_COMMITS_TO_SAMPLE: number;
 } = {
+  BATCH_SIZE: 10,
   CLEAR_DATA_BEFORE_FETCH: true, // Set to false to keep existing data
   MAX_REPOS_PER_ORG: null, // Set to null to process all repos (production mode)
   MAX_CONTRIBUTORS_PER_REPO: null, // Set to null to process all contributors (production mode)
   ENABLE_DETAILED_LOGGING: true, // Enable verbose logging for debugging
   FILTER_BOTS: true, // Filter out common bots from contributors
+  SAMPLE_COMMITS_FOR_EMAILS: true, // Sample commits to collect email addresses
+  MAX_COMMITS_TO_SAMPLE: 5, // Number of commits to sample per contributor for emails
 };
 
 // Common bot patterns to filter out
@@ -52,6 +56,82 @@ function isBot(username: string): boolean {
   if (!FETCH_CONFIG.FILTER_BOTS) return false;
 
   return BOT_PATTERNS.some((pattern) => pattern.test(username));
+}
+
+/**
+ * Sample commits from a contributor to extract email addresses
+ */
+async function sampleCommitsForEmails(
+  client: any,
+  authorId: string,
+  authorLogin: string,
+  org: string,
+  repo: string
+): Promise<void> {
+  if (!FETCH_CONFIG.SAMPLE_COMMITS_FOR_EMAILS) return;
+
+  try {
+    console.log(
+      `        📧 Sampling commits for ${authorLogin} email addresses...`
+    );
+
+    // Get recent commits by this author
+    const { data: commits } = await makeApiCall(octokit, () =>
+      octokit.rest.repos.listCommits({
+        owner: org,
+        repo: repo,
+        author: authorLogin,
+        per_page: FETCH_CONFIG.MAX_COMMITS_TO_SAMPLE,
+      })
+    );
+
+    if (commits.length === 0) {
+      console.log(`        📧 No commits found for ${authorLogin}`);
+      return;
+    }
+
+    const emailsFound = new Set<string>();
+
+    // Extract emails from commit data
+    for (const commit of commits) {
+      if (commit.commit?.author?.email) {
+        const email = commit.commit.author.email.toLowerCase().trim();
+
+        // Skip invalid or placeholder emails
+        if (
+          email &&
+          email !== "noreply@github.com" &&
+          !email.includes("users.noreply.github.com") &&
+          email.includes("@") &&
+          email.length > 5
+        ) {
+          emailsFound.add(email);
+
+          // Store the email with commit date
+          await queries.insertOrUpdateAuthorEmail(client, {
+            author_id: authorId,
+            email: email,
+            commit_date: new Date(commit.commit.author.date),
+          });
+        }
+      }
+    }
+
+    if (emailsFound.size > 0) {
+      console.log(
+        `        📧 Found ${emailsFound.size} unique emails for ${authorLogin}: ${Array.from(emailsFound).join(", ")}`
+      );
+
+      // Update the author's primary email
+      await queries.updateAuthorPrimaryEmail(client, authorId);
+    } else {
+      console.log(`        📧 No valid emails found for ${authorLogin}`);
+    }
+  } catch (error) {
+    console.log(
+      `        ⚠️  Failed to sample commits for ${authorLogin}: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
 }
 
 // Fork Detection Configuration
@@ -224,8 +304,8 @@ async function fetchOrganizationData(
 
   // 3. Process repositories in smaller batches with delays
   let processedRepos = 0;
-  for (let i = 0; i < targetRepos.length; i += BATCH_SIZE) {
-    const batch = targetRepos.slice(i, i + BATCH_SIZE);
+  for (let i = 0; i < targetRepos.length; i += FETCH_CONFIG.BATCH_SIZE) {
+    const batch = targetRepos.slice(i, i + FETCH_CONFIG.BATCH_SIZE);
     await Promise.all(
       batch.map(async (repo: Repository) => {
         try {
@@ -396,6 +476,15 @@ async function fetchOrganizationData(
                 stat.author.login
               );
 
+              // Sample commits to collect email addresses
+              await sampleCommitsForEmails(
+                client,
+                authorId,
+                stat.author.login,
+                org,
+                repo.name
+              );
+
               // Process weekly contributions
               for (const week of stat.weeks) {
                 if (
@@ -472,7 +561,7 @@ async function fetchOrganizationData(
     );
 
     // Add delay between batches
-    if (i + BATCH_SIZE < targetRepos.length) {
+    if (i + FETCH_CONFIG.BATCH_SIZE < targetRepos.length) {
       console.log(`    ⏳ Waiting between batches...`);
       await delay(5000); // 5 seconds between batches
     }
@@ -589,6 +678,14 @@ async function fetchAll(fetchType = fetchTypes.top10): Promise<void> {
       }
       console.log(`   🤖 Filter bots: ${FETCH_CONFIG.FILTER_BOTS}`);
       console.log(
+        `   📧 Sample commits for emails: ${FETCH_CONFIG.SAMPLE_COMMITS_FOR_EMAILS}`
+      );
+      if (FETCH_CONFIG.SAMPLE_COMMITS_FOR_EMAILS) {
+        console.log(
+          `   📊 Max commits to sample: ${FETCH_CONFIG.MAX_COMMITS_TO_SAMPLE}`
+        );
+      }
+      console.log(
         `   📝 Detailed logging: ${FETCH_CONFIG.ENABLE_DETAILED_LOGGING}`
       );
     }
@@ -600,8 +697,8 @@ async function fetchAll(fetchType = fetchTypes.top10): Promise<void> {
         await queries.clearAllGitHubData(client);
       }
 
-      for (let i = 0; i < organizations.length; i += BATCH_SIZE) {
-        const batch = organizations.slice(i, i + BATCH_SIZE);
+      for (let i = 0; i < organizations.length; i += FETCH_CONFIG.BATCH_SIZE) {
+        const batch = organizations.slice(i, i + FETCH_CONFIG.BATCH_SIZE);
         await Promise.all(
           batch.map((org) => fetchOrganizationData(client, org, fetchType))
         );
@@ -646,6 +743,19 @@ async function fetchAll(fetchType = fetchTypes.top10): Promise<void> {
         console.log(
           `   🔗 Organization connections: ${connectionCount.rows[0].count}`
         );
+
+        // Count email addresses collected
+        if (FETCH_CONFIG.SAMPLE_COMMITS_FOR_EMAILS) {
+          const emailCount = await client.query(
+            "SELECT COUNT(*) FROM github.author_email"
+          );
+          const authorsWithEmails = await client.query(
+            "SELECT COUNT(DISTINCT author_id) FROM github.author_email"
+          );
+          console.log(
+            `   📧 Email addresses collected: ${emailCount.rows[0].count} (${authorsWithEmails.rows[0].count} contributors)`
+          );
+        }
       }
     });
 
