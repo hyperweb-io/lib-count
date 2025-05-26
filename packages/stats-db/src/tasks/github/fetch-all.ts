@@ -1,11 +1,67 @@
 import "../../setup-env";
 import { Database } from "@cosmology/db-client";
-import { Octokit, RestEndpointMethodTypes } from "@octokit/rest";
+import { RestEndpointMethodTypes } from "@octokit/rest";
 import * as queries from "./github.queries";
 import { organizations, fetchTypes, knownForks } from "./data-config";
-import { findCommonHistory, isRepositoryAFork } from "./analyze-repo";
+import { createOctokitClient, makeApiCall } from "./octokit-client";
+import { detectRepositoryFork, ForkDetectionOptions } from "./fork-detection";
 
 const BATCH_SIZE = 5; // Reduced from 100 to 5 for better rate limit handling
+
+// Fetch Configuration
+// Configure data collection limits and behavior
+// Set numeric values to null to fetch all data (production mode)
+const FETCH_CONFIG: {
+  CLEAR_DATA_BEFORE_FETCH: boolean;
+  MAX_REPOS_PER_ORG: number | null;
+  MAX_CONTRIBUTORS_PER_REPO: number | null;
+  ENABLE_DETAILED_LOGGING: boolean;
+  FILTER_BOTS: boolean;
+} = {
+  CLEAR_DATA_BEFORE_FETCH: true, // Set to false to keep existing data
+  MAX_REPOS_PER_ORG: null, // Set to null to process all repos (production mode)
+  MAX_CONTRIBUTORS_PER_REPO: null, // Set to null to process all contributors (production mode)
+  ENABLE_DETAILED_LOGGING: true, // Enable verbose logging for debugging
+  FILTER_BOTS: true, // Filter out common bots from contributors
+};
+
+// Common bot patterns to filter out
+const BOT_PATTERNS = [
+  /^dependabot(\[bot\])?$/i,
+  /^renovate(\[bot\])?$/i,
+  /^greenkeeper(\[bot\])?$/i,
+  /^codecov(\[bot\])?$/i,
+  /^github-actions(\[bot\])?$/i,
+  /^semantic-release-bot$/i,
+  /^snyk-bot$/i,
+  /^whitesource-bolt(\[bot\])?$/i,
+  /^allcontributors(\[bot\])?$/i,
+  /^imgbot(\[bot\])?$/i,
+  /^deepsource-autofix(\[bot\])?$/i,
+  /^pre-commit-ci(\[bot\])?$/i,
+  /^gitpod-io(\[bot\])?$/i,
+  /^web-flow$/i, // GitHub web interface commits
+  /bot$/i, // Generic bot suffix
+  /\[bot\]$/i, // GitHub bot format
+];
+
+/**
+ * Check if a username appears to be a bot
+ */
+function isBot(username: string): boolean {
+  if (!FETCH_CONFIG.FILTER_BOTS) return false;
+
+  return BOT_PATTERNS.some((pattern) => pattern.test(username));
+}
+
+// Fork Detection Configuration
+const FORK_DETECTION_CONFIG: ForkDetectionOptions = {
+  enableCommitAnalysis: true, // Enable commit-based fork detection
+  enableNameSimilarity: false, // Disable name similarity (can be noisy)
+  maxCommitsToAnalyze: 10, // Analyze up to 10 commits for fork indicators
+  similarityThreshold: 0.85, // High threshold for name similarity
+};
+
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 
 if (!GITHUB_TOKEN) {
@@ -35,30 +91,7 @@ type Repository = {
   owner_id?: string;
 };
 
-const octokit = new Octokit({
-  auth: GITHUB_TOKEN,
-  userAgent: "hyperweb-github-fetcher",
-  throttle: {
-    onRateLimit: (
-      retryAfter: number,
-      options: { method: string; url: string }
-    ) => {
-      console.warn(
-        `Rate limit hit for ${options.method} ${options.url}, waiting ${retryAfter} seconds`
-      );
-      return retryAfter <= 60;
-    },
-    onSecondaryRateLimit: (
-      retryAfter: number,
-      options: { method: string; url: string }
-    ) => {
-      console.warn(
-        `Secondary rate limit hit for ${options.method} ${options.url}, waiting ${retryAfter} seconds`
-      );
-      return true;
-    },
-  },
-});
+const octokit = createOctokitClient(GITHUB_TOKEN);
 
 // Add delay helper
 async function delay(ms: number): Promise<void> {
@@ -74,10 +107,12 @@ async function fetchContributorOrganizations(
 
   try {
     // Get all organizations the contributor belongs to using pagination
-    const authorOrgs = await octokit.paginate(octokit.rest.orgs.listForUser, {
-      username: login,
-      per_page: 100,
-    });
+    const authorOrgs = await makeApiCall(octokit, () =>
+      octokit.paginate(octokit.rest.orgs.listForUser, {
+        username: login,
+        per_page: 100,
+      })
+    );
 
     // Process each organization
     for (const org of authorOrgs) {
@@ -109,13 +144,6 @@ async function fetchContributorOrganizations(
   }
 }
 
-async function isKnownFork(
-  fullName: string
-): Promise<{ isFork: boolean; parentRepo?: string }> {
-  const parentRepo = knownForks[fullName as keyof typeof knownForks];
-  return parentRepo ? { isFork: true, parentRepo } : { isFork: false };
-}
-
 async function fetchOrganizationData(
   client: any,
   org: string,
@@ -125,7 +153,9 @@ async function fetchOrganizationData(
 
   // 1. Insert/Update organization
   console.log(`  ⬇️  Fetching organization details...`);
-  const { data: orgData } = await octokit.rest.orgs.get({ org });
+  const { data: orgData } = await makeApiCall(octokit, () =>
+    octokit.rest.orgs.get({ org })
+  );
 
   const { id: orgId } = await queries.insertOrganization(client, {
     github_id: orgData.id,
@@ -138,13 +168,15 @@ async function fetchOrganizationData(
 
   // 2. Fetch repositories
   console.log(`  ⬇️  Fetching repositories...`);
-  const repos = await octokit.paginate(octokit.rest.repos.listForOrg, {
-    org,
-    type: "all",
-    sort: "updated",
-    direction: "desc",
-    per_page: 100,
-  });
+  const repos = await makeApiCall(octokit, () =>
+    octokit.paginate(octokit.rest.repos.listForOrg, {
+      org,
+      type: "all",
+      sort: "updated",
+      direction: "desc",
+      per_page: 100,
+    })
+  );
   console.log(`  📊 Found ${repos.length} repositories`);
 
   // Update the repository mapping to use our type
@@ -165,12 +197,20 @@ async function fetchOrganizationData(
       })
     );
 
-  const targetRepos =
+  let targetRepos =
     fetchType === fetchTypes.top10
       ? sortedRepos.slice(0, 10)
       : fetchType === fetchTypes.top3
         ? sortedRepos.slice(0, 3)
         : sortedRepos;
+
+  // Apply fetch configuration limits
+  if (FETCH_CONFIG.MAX_REPOS_PER_ORG !== null) {
+    targetRepos = targetRepos.slice(0, FETCH_CONFIG.MAX_REPOS_PER_ORG);
+    console.log(
+      `  🔧 FETCH LIMIT: Limited to ${FETCH_CONFIG.MAX_REPOS_PER_ORG} repositories`
+    );
+  }
 
   console.log(
     `  🎯 Processing ${targetRepos.length} repositories (${
@@ -179,7 +219,7 @@ async function fetchOrganizationData(
         : fetchType === fetchTypes.top3
           ? "top 3"
           : "all"
-    })`
+    }${FETCH_CONFIG.MAX_REPOS_PER_ORG !== null ? " - FETCH LIMITED" : ""})`
   );
 
   // 3. Process repositories in smaller batches with delays
@@ -191,69 +231,149 @@ async function fetchOrganizationData(
         try {
           console.log(`    📂 Processing ${repo.full_name}...`);
 
-          // Simplified fork detection
-          console.log(`      🔍 Checking fork status...`);
+          // Robust fork detection using multiple methods
+          console.log(`      🔍 Performing comprehensive fork analysis...`);
 
-          // First check GitHub API metadata
-          const { data: repoData } = await octokit.rest.repos.get({
-            owner: org,
-            repo: repo.name,
-          });
+          const forkInfo = await detectRepositoryFork(
+            octokit,
+            org,
+            repo.name,
+            knownForks,
+            FORK_DETECTION_CONFIG
+          );
 
-          let isFork = repoData.fork;
-          let parentRepo = repoData.parent?.full_name;
-          let forkDate: Date | undefined;
+          // Update repository with fork information
+          repo.is_fork = forkInfo.isFork;
 
-          // If not marked as fork by GitHub, check whitelist
-          if (!isFork) {
-            const knownForkInfo = await isKnownFork(repo.full_name);
-            isFork = knownForkInfo.isFork;
-            parentRepo = knownForkInfo.parentRepo;
-          }
-
-          if (isFork) {
-            console.log(`      📑 Fork detected! Parent: ${parentRepo}`);
-            repo.is_fork = true;
-
-            // Get fork date from first commit if available
-            try {
-              const { data: commits } = await octokit.rest.repos.listCommits({
-                owner: org,
-                repo: repo.name,
-                per_page: 1,
-              });
-              forkDate = commits[0]?.commit.committer?.date
-                ? new Date(commits[0].commit.committer.date)
-                : undefined;
-            } catch (error) {
-              console.warn(`      ⚠️  Failed to get fork date`);
+          if (forkInfo.isFork) {
+            console.log(
+              `      📑 Fork detected! Method: ${forkInfo.detectionMethod}, Confidence: ${forkInfo.confidence}`
+            );
+            if (forkInfo.parentRepo) {
+              console.log(`      📂 Parent: ${forkInfo.parentRepo}`);
             }
+            if (
+              forkInfo.sourceRepo &&
+              forkInfo.sourceRepo !== forkInfo.parentRepo
+            ) {
+              console.log(`      🌟 Ultimate source: ${forkInfo.sourceRepo}`);
+            }
+            if (forkInfo.additionalInfo?.parentAccessible === false) {
+              console.log(`      ⚠️  Parent repository not accessible`);
+            }
+          } else {
+            console.log(
+              `      ✅ Not a fork (confidence: ${forkInfo.confidence})`
+            );
           }
 
           // Insert repository
           const { id: repoId } = await queries.insertRepository(client, {
             ...repo,
-            is_fork: isFork,
-            fork_date: forkDate,
+            is_fork: forkInfo.isFork,
+            fork_date: forkInfo.forkDate,
+            parent_repo: forkInfo.parentRepo,
+            source_repo: forkInfo.sourceRepo,
+            fork_detection_method: forkInfo.detectionMethod,
+            fork_detection_confidence: forkInfo.confidence,
             owner_id: orgId,
           });
 
           // Fetch contributions (Requirement #6)
           console.log(`      📊 Fetching contributor statistics...`);
-          const stats = (await octokit.paginate(
-            octokit.rest.repos.getContributorsStats,
-            {
+
+          if (FETCH_CONFIG.ENABLE_DETAILED_LOGGING) {
+            console.log(
+              `      🔍 Repository details: ${repo.full_name} (⭐${repo.stars_count}, 🍴${repo.forks_count})`
+            );
+          }
+
+          let stats = (await makeApiCall(octokit, () =>
+            octokit.paginate(octokit.rest.repos.getContributorsStats, {
               owner: org,
               repo: repo.name,
-            }
+            })
           )) as ContributorStats;
+
+          if (FETCH_CONFIG.ENABLE_DETAILED_LOGGING) {
+            console.log(
+              `      📈 GitHub API returned ${stats.length} contributors with stats`
+            );
+            if (stats.length > 0) {
+              console.log(
+                `      👥 Contributors found: ${stats.map((s) => s.author?.login || "unknown").join(", ")}`
+              );
+            }
+
+            // Also check regular contributors API for comparison
+            try {
+              const regularContributors = await octokit.paginate(
+                octokit.rest.repos.listContributors,
+                {
+                  owner: org,
+                  repo: repo.name,
+                  per_page: 10,
+                }
+              );
+              console.log(
+                `      🔍 Regular contributors API returned ${regularContributors.length} contributors`
+              );
+              if (regularContributors.length > 0) {
+                console.log(
+                  `      👥 Regular contributors: ${regularContributors
+                    .map((c) => c.login)
+                    .slice(0, 5)
+                    .join(", ")}${regularContributors.length > 5 ? "..." : ""}`
+                );
+              }
+            } catch (error) {
+              console.log(
+                `      ⚠️  Regular contributors API failed: ${error instanceof Error ? error.message : String(error)}`
+              );
+            }
+          }
+
+          // Filter out bots if enabled
+          if (FETCH_CONFIG.FILTER_BOTS) {
+            const originalCount = stats.length;
+            stats = stats.filter(
+              (stat) => stat.author && !isBot(stat.author.login)
+            );
+            const filteredCount = originalCount - stats.length;
+            if (filteredCount > 0) {
+              console.log(
+                `      🤖 BOT FILTER: Filtered out ${filteredCount} bot contributors (${stats.length} remaining)`
+              );
+            }
+          }
+
+          // Apply fetch configuration limits for contributors
+          if (FETCH_CONFIG.MAX_CONTRIBUTORS_PER_REPO !== null) {
+            const originalCount = stats.length;
+            stats = stats.slice(0, FETCH_CONFIG.MAX_CONTRIBUTORS_PER_REPO);
+            console.log(
+              `      🔧 FETCH LIMIT: Limited to ${FETCH_CONFIG.MAX_CONTRIBUTORS_PER_REPO} contributors (was ${originalCount})`
+            );
+          }
 
           let totalCommits = 0;
 
+          if (FETCH_CONFIG.ENABLE_DETAILED_LOGGING) {
+            console.log(
+              `      👥 Processing ${stats.length} contributors for ${repo.full_name}`
+            );
+          }
+
           // Process contributors in parallel
           await Promise.all(
-            stats.map(async (stat) => {
+            stats.map(async (stat, index) => {
               if (!stat.author) return;
+
+              if (FETCH_CONFIG.ENABLE_DETAILED_LOGGING) {
+                console.log(
+                  `        👤 Processing contributor ${index + 1}/${stats.length}: ${stat.author.login}`
+                );
+              }
 
               // Insert/Update author
               const { id: authorId } = await queries.insertAuthor(client, {
@@ -262,6 +382,12 @@ async function fetchOrganizationData(
                 name: undefined,
                 avatar_url: stat.author.avatar_url,
               });
+
+              if (FETCH_CONFIG.ENABLE_DETAILED_LOGGING) {
+                console.log(
+                  `        💾 Saved author: ${stat.author.login} (ID: ${authorId})`
+                );
+              }
 
               // Fetch all organizations this contributor belongs to
               await fetchContributorOrganizations(
@@ -312,8 +438,21 @@ async function fetchOrganizationData(
 
           processedRepos++;
           console.log(
-            `      ✅ Processed repository with ${totalCommits} commits`
+            `      ✅ Processed repository with ${totalCommits} commits from ${stats.length} contributors`
           );
+
+          if (FETCH_CONFIG.ENABLE_DETAILED_LOGGING) {
+            console.log(`      📊 Repository summary for ${repo.full_name}:`);
+            console.log(
+              `         - Fork status: ${forkInfo.isFork ? "Yes" : "No"}${forkInfo.parentRepo ? ` (parent: ${forkInfo.parentRepo})` : ""}`
+            );
+            console.log(`         - Contributors processed: ${stats.length}`);
+            console.log(`         - Total commits: ${totalCommits}`);
+            console.log(
+              `         - Stars: ${repo.stars_count}, Forks: ${repo.forks_count}`
+            );
+          }
+
           console.log(
             `      📈 Progress: ${processedRepos}/${targetRepos.length} repositories`
           );
@@ -422,13 +561,90 @@ async function fetchAll(fetchType = fetchTypes.top10): Promise<void> {
   try {
     console.log("\n🚀 Starting GitHub data fetch...");
     console.log(`📋 Fetch type: ${fetchType}`);
-    console.log(`🎯 Target organizations: ${organizations.join(", ")}\n`);
+    console.log(`🎯 Target organizations: ${organizations.join(", ")}`);
+
+    // Log fetch configuration
+    if (
+      FETCH_CONFIG.MAX_REPOS_PER_ORG !== null ||
+      FETCH_CONFIG.MAX_CONTRIBUTORS_PER_REPO !== null ||
+      FETCH_CONFIG.CLEAR_DATA_BEFORE_FETCH ||
+      FETCH_CONFIG.FILTER_BOTS ||
+      FETCH_CONFIG.ENABLE_DETAILED_LOGGING
+    ) {
+      console.log("\n🔧 FETCH CONFIGURATION:");
+      if (FETCH_CONFIG.CLEAR_DATA_BEFORE_FETCH) {
+        console.log(
+          `   🧹 Clear data before fetch: ${FETCH_CONFIG.CLEAR_DATA_BEFORE_FETCH}`
+        );
+      }
+      if (FETCH_CONFIG.MAX_REPOS_PER_ORG !== null) {
+        console.log(
+          `   📂 Max repos per org: ${FETCH_CONFIG.MAX_REPOS_PER_ORG}`
+        );
+      }
+      if (FETCH_CONFIG.MAX_CONTRIBUTORS_PER_REPO !== null) {
+        console.log(
+          `   👥 Max contributors per repo: ${FETCH_CONFIG.MAX_CONTRIBUTORS_PER_REPO}`
+        );
+      }
+      console.log(`   🤖 Filter bots: ${FETCH_CONFIG.FILTER_BOTS}`);
+      console.log(
+        `   📝 Detailed logging: ${FETCH_CONFIG.ENABLE_DETAILED_LOGGING}`
+      );
+    }
+    console.log("");
 
     await db.withTransaction(async (client) => {
+      // Clear existing data if configured
+      if (FETCH_CONFIG.CLEAR_DATA_BEFORE_FETCH) {
+        await queries.clearAllGitHubData(client);
+      }
+
       for (let i = 0; i < organizations.length; i += BATCH_SIZE) {
         const batch = organizations.slice(i, i + BATCH_SIZE);
         await Promise.all(
           batch.map((org) => fetchOrganizationData(client, org, fetchType))
+        );
+      }
+
+      // Generate final summary
+      if (FETCH_CONFIG.ENABLE_DETAILED_LOGGING) {
+        console.log("\n📊 FINAL COLLECTION SUMMARY:");
+
+        // Count total organizations
+        const orgCount = await client.query(
+          "SELECT COUNT(*) FROM github.organization"
+        );
+        console.log(`   🏢 Organizations collected: ${orgCount.rows[0].count}`);
+
+        // Count total repositories
+        const repoCount = await client.query(
+          "SELECT COUNT(*) FROM github.repository"
+        );
+        console.log(`   📂 Repositories collected: ${repoCount.rows[0].count}`);
+
+        // Count total authors
+        const authorCount = await client.query(
+          "SELECT COUNT(*) FROM github.author"
+        );
+        console.log(
+          `   👥 Contributors collected: ${authorCount.rows[0].count}`
+        );
+
+        // Count total contributions
+        const contributionCount = await client.query(
+          "SELECT COUNT(*) FROM github.daily_contribution"
+        );
+        console.log(
+          `   📈 Daily contributions recorded: ${contributionCount.rows[0].count}`
+        );
+
+        // Count organization connections
+        const connectionCount = await client.query(
+          "SELECT COUNT(*) FROM github.organization_connection"
+        );
+        console.log(
+          `   🔗 Organization connections: ${connectionCount.rows[0].count}`
         );
       }
     });
@@ -457,4 +673,4 @@ if (require.main === module) {
     });
 }
 
-export { fetchAll, isRepositoryAFork, findCommonHistory };
+export { fetchAll };
