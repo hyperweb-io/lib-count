@@ -2,7 +2,7 @@ import { exec } from "child_process";
 import { createGzip } from "zlib";
 import { createReadStream, createWriteStream, statSync } from "fs";
 import { promisify } from "util";
-import { unlink } from "fs/promises";
+import { unlink, mkdir } from "fs/promises";
 import * as path from "path";
 import { S3Client } from "@aws-sdk/client-s3";
 import { Upload } from "@aws-sdk/lib-storage";
@@ -99,8 +99,19 @@ async function dumpAndGzip(
   const gzipFile = path.join(exportsDir, `backup-${timestamp}.sql.gz`);
 
   try {
-    // Create dump
-    const dumpCommand = `PGPASSWORD=password docker exec -i postgres pg_dump -U postgres example_db > ${dumpFile}`;
+    // Ensure exports directory exists
+    await mkdir(exportsDir, { recursive: true });
+
+    // Create dump - detect environment and use appropriate command
+    const isCI =
+      process.env.CI === "true" || process.env.GITHUB_ACTIONS === "true";
+    const dumpCommand = isCI
+      ? `PGPASSWORD=password pg_dump -h localhost -p 5432 -U postgres example_db > ${dumpFile}`
+      : `PGPASSWORD=password docker exec -i postgres pg_dump -U postgres example_db > ${dumpFile}`;
+
+    console.log(
+      `Running dump command (CI: ${isCI}): ${dumpCommand.replace("PGPASSWORD=password", "PGPASSWORD=***")}`
+    );
     await execAsync(dumpCommand);
 
     // Get original file size
@@ -149,7 +160,7 @@ async function dumpAndGzip(
         console.log("Continuing without S3 upload.");
       }
     } else if (skipUpload) {
-      console.log("S3 upload skipped as requested.");
+      console.log("S3 upload skipped.");
     } else if (!bucketName) {
       console.log("No S3 bucket name provided. Skipping upload.");
     }
