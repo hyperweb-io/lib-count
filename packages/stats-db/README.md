@@ -1,4 +1,13 @@
-## Database Schema Management
+# Database Schema Management
+
+## Database Options
+
+This package supports both PostgreSQL and DuckDB for different use cases:
+
+- **PostgreSQL**: Traditional client-server setup, ideal for production environments
+- **DuckDB**: File-based analytical database, ideal for development, analytics, and embedded use cases
+
+## PostgreSQL Schema Management
 
 ### Load Schema
 
@@ -40,6 +49,65 @@ Examples:
   ./scripts/schema.sh -s npm      Reset only npm schema
   ./scripts/schema.sh -s github   Reset only github schema
 ```
+
+## DuckDB Schema Management
+
+### Prerequisites
+
+First, install DuckDB CLI:
+
+```sh
+# macOS with Homebrew
+brew install duckdb
+
+# Windows with winget
+winget install DuckDB.cli
+
+# Linux - download from https://duckdb.org/docs/installation
+```
+
+### Load DuckDB Schema
+
+The DuckDB schema management maintains the same developer experience as PostgreSQL:
+
+```sh
+# Reset all schemas (npm_count and github)
+./scripts/schema-duckdb.sh
+
+# Reset only npm_count schema
+./scripts/schema-duckdb.sh -s npm
+
+# Reset only github schema
+./scripts/schema-duckdb.sh -s github
+
+# Show help and usage information
+./scripts/schema-duckdb.sh --help
+```
+
+The DuckDB version:
+
+- Creates a file-based database at `./data/example_db.duckdb`
+- Uses the same command-line interface as PostgreSQL version
+- Automatically handles DuckDB-specific syntax differences
+- Maintains the same schema structure with minor adaptations
+
+### Key Differences from PostgreSQL
+
+| Feature           | PostgreSQL                  | DuckDB                          |
+| ----------------- | --------------------------- | ------------------------------- |
+| Extensions        | `uuid-ossp`, `btree_gist`   | Built-in UUID support           |
+| UUID Generation   | `uuid_generate_v4()`        | `gen_random_uuid()`             |
+| Triggers          | PL/pgSQL triggers           | Application-level logic         |
+| Connection        | Client/server with `psql`   | File-based with `duckdb` CLI    |
+| Indexes           | Full PostgreSQL index types | Standard indexes (no GIN, GIST) |
+| Stored Procedures | PL/pgSQL functions          | CREATE MACRO for simple cases   |
+
+### Database File Location
+
+- Database file: `./data/example_db.duckdb`
+- Automatic creation if file doesn't exist
+- Single file contains all schemas and data
+- No separate server process required
 
 ## Run Application
 
