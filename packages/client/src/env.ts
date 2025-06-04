@@ -1,10 +1,7 @@
-import { cleanEnv, url } from 'envalid';
+import { cleanEnv, str } from "envalid";
 
-const env = cleanEnv(
-  process.env,
-  {
-    DATABASE_URL: url(),
-  }
-);
+const env = cleanEnv(process.env, {
+  DUCKDB_PATH: str({ default: ":memory:" }),
+});
 
 export default env;

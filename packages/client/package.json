@@ -30,9 +30,8 @@
     "test:watch": "jest --watch"
   },
   "dependencies": {
-    "@types/pg": "^8.11.10",
-    "envalid": "^8.0.0",
-    "pg": "^8.13.1"
+    "duckdb": "^1.3.0",
+    "envalid": "^8.0.0"
   },
   "keywords": []
 }
