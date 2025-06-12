@@ -1,10 +1,21 @@
 import "../../setup-env";
-import { Database } from "@cosmology/db-client";
 import { RestEndpointMethodTypes } from "@octokit/rest";
 import * as queries from "./github.queries";
 import { organizations, fetchTypes, knownForks } from "./data-config";
 import { createOctokitClient, makeApiCall } from "./octokit-client";
 import { detectRepositoryFork, ForkDetectionOptions } from "./fork-detection";
+import { db } from "../../db";
+import {
+  author,
+  authorEmail,
+  authorOrganizationHistory,
+  contributionSummary,
+  dailyContribution,
+  organization,
+  organizationConnection,
+  repository,
+} from "../../schema/github";
+import { and, count, eq, inArray, sql } from "drizzle-orm";
 
 // Fetch Configuration
 // Configure data collection limits and behavior
@@ -62,7 +73,6 @@ function isBot(username: string): boolean {
  * Sample commits from a contributor to extract email addresses
  */
 async function sampleCommitsForEmails(
-  client: any,
   authorId: string,
   authorLogin: string,
   org: string,
@@ -75,7 +85,6 @@ async function sampleCommitsForEmails(
       `        📧 Sampling commits for ${authorLogin} email addresses...`
     );
 
-    // Get recent commits by this author
     const { data: commits } = await makeApiCall(octokit, () =>
       octokit.rest.repos.listCommits({
         owner: org,
@@ -92,12 +101,10 @@ async function sampleCommitsForEmails(
 
     const emailsFound = new Set<string>();
 
-    // Extract emails from commit data
     for (const commit of commits) {
       if (commit.commit?.author?.email) {
         const email = commit.commit.author.email.toLowerCase().trim();
 
-        // Skip invalid or placeholder emails
         if (
           email &&
           email !== "noreply@github.com" &&
@@ -107,11 +114,10 @@ async function sampleCommitsForEmails(
         ) {
           emailsFound.add(email);
 
-          // Store the email with commit date
-          await queries.insertOrUpdateAuthorEmail(client, {
-            author_id: authorId,
+          await queries.insertOrUpdateAuthorEmail({
+            authorId: authorId,
             email: email,
-            commit_date: new Date(commit.commit.author.date),
+            commitDate: new Date(commit.commit.author.date),
           });
         }
       }
@@ -122,8 +128,7 @@ async function sampleCommitsForEmails(
         `        📧 Found ${emailsFound.size} unique emails for ${authorLogin}: ${Array.from(emailsFound).join(", ")}`
       );
 
-      // Update the author's primary email
-      await queries.updateAuthorPrimaryEmail(client, authorId);
+      await queries.updateAuthorPrimaryEmail(authorId);
     } else {
       console.log(`        📧 No valid emails found for ${authorLogin}`);
     }
@@ -157,18 +162,18 @@ type ContributorStats = NonNullable<
 
 // Add a custom type for our internal repository representation
 type Repository = {
-  github_id: number;
+  githubId: number;
   name: string;
-  full_name: string;
+  fullName: string;
   description?: string;
   url: string;
-  is_fork: boolean;
-  fork_date?: string | Date; // Allow both string and Date
-  stars_count: number;
-  forks_count: number;
-  commits_count: number;
-  primary_language?: string;
-  owner_id?: string;
+  isFork: boolean;
+  forkDate?: string | Date; // Allow both string and Date
+  starsCount: number;
+  forksCount: number;
+  commitsCount: number;
+  primaryLanguage?: string;
+  ownerId?: string;
 };
 
 const octokit = createOctokitClient(GITHUB_TOKEN);
@@ -179,14 +184,12 @@ async function delay(ms: number): Promise<void> {
 }
 
 async function fetchContributorOrganizations(
-  client: any,
   authorId: string,
   login: string
 ): Promise<void> {
   console.log(`      🔍 Fetching organizations for contributor ${login}...`);
 
   try {
-    // Get all organizations the contributor belongs to using pagination
     const authorOrgs = await makeApiCall(octokit, () =>
       octokit.paginate(octokit.rest.orgs.listForUser, {
         username: login,
@@ -194,22 +197,19 @@ async function fetchContributorOrganizations(
       })
     );
 
-    // Process each organization
     for (const org of authorOrgs) {
-      // Insert the organization if it doesn't exist
-      const { id: orgId } = await queries.insertOrganization(client, {
-        github_id: org.id,
+      const { id: orgId } = await queries.insertOrganization({
+        githubId: org.id,
         login: org.login,
         name: org.login || undefined,
         description: org.description || undefined,
-        avatar_url: org.avatar_url,
+        avatarUrl: org.avatar_url,
       });
 
-      // Add to author organization history
-      await queries.updateAuthorOrgHistory(client, {
-        author_id: authorId,
-        organization_id: orgId,
-        joined_at: new Date(), // Using current date as we don't have the actual join date
+      await queries.updateAuthorOrgHistory({
+        authorId: authorId,
+        organizationId: orgId,
+        joinedAt: new Date(),
       });
     }
 
@@ -225,28 +225,25 @@ async function fetchContributorOrganizations(
 }
 
 async function fetchOrganizationData(
-  client: any,
   org: string,
   fetchType: string
 ): Promise<void> {
   console.log(`\n📦 Processing organization: ${org}`);
 
-  // 1. Insert/Update organization
   console.log(`  ⬇️  Fetching organization details...`);
   const { data: orgData } = await makeApiCall(octokit, () =>
     octokit.rest.orgs.get({ org })
   );
 
-  const { id: orgId } = await queries.insertOrganization(client, {
-    github_id: orgData.id,
+  const { id: orgId } = await queries.insertOrganization({
+    githubId: orgData.id,
     login: orgData.login,
     name: orgData.name || undefined,
     description: orgData.description || undefined,
-    avatar_url: orgData.avatar_url,
+    avatarUrl: orgData.avatar_url,
   });
   console.log(`  ✅ Organization details saved`);
 
-  // 2. Fetch repositories
   console.log(`  ⬇️  Fetching repositories...`);
   const repos = await makeApiCall(octokit, () =>
     octokit.paginate(octokit.rest.repos.listForOrg, {
@@ -259,21 +256,20 @@ async function fetchOrganizationData(
   );
   console.log(`  📊 Found ${repos.length} repositories`);
 
-  // Update the repository mapping to use our type
   const sortedRepos = repos
     .sort((a, b) => b.stargazers_count - a.stargazers_count)
     .map(
       (repo: OrgRepo): Repository => ({
-        github_id: repo.id,
+        githubId: repo.id,
         name: repo.name,
-        full_name: repo.full_name,
+        fullName: repo.full_name,
         description: repo.description,
         url: repo.html_url,
-        is_fork: repo.fork,
-        stars_count: repo.stargazers_count,
-        forks_count: repo.forks_count,
-        commits_count: 0,
-        primary_language: repo.language,
+        isFork: repo.fork,
+        starsCount: repo.stargazers_count,
+        forksCount: repo.forks_count,
+        commitsCount: 0,
+        primaryLanguage: repo.language,
       })
     );
 
@@ -284,7 +280,6 @@ async function fetchOrganizationData(
         ? sortedRepos.slice(0, 3)
         : sortedRepos;
 
-  // Apply fetch configuration limits
   if (FETCH_CONFIG.MAX_REPOS_PER_ORG !== null) {
     targetRepos = targetRepos.slice(0, FETCH_CONFIG.MAX_REPOS_PER_ORG);
     console.log(
@@ -302,16 +297,13 @@ async function fetchOrganizationData(
     }${FETCH_CONFIG.MAX_REPOS_PER_ORG !== null ? " - FETCH LIMITED" : ""})`
   );
 
-  // 3. Process repositories in smaller batches with delays
   let processedRepos = 0;
   for (let i = 0; i < targetRepos.length; i += FETCH_CONFIG.BATCH_SIZE) {
     const batch = targetRepos.slice(i, i + FETCH_CONFIG.BATCH_SIZE);
     await Promise.all(
       batch.map(async (repo: Repository) => {
         try {
-          console.log(`    📂 Processing ${repo.full_name}...`);
-
-          // Robust fork detection using multiple methods
+          console.log(`    📂 Processing ${repo.fullName}...`);
           console.log(`      🔍 Performing comprehensive fork analysis...`);
 
           const forkInfo = await detectRepositoryFork(
@@ -322,51 +314,29 @@ async function fetchOrganizationData(
             FORK_DETECTION_CONFIG
           );
 
-          // Update repository with fork information
-          repo.is_fork = forkInfo.isFork;
+          repo.isFork = forkInfo.isFork;
+          repo.forkDate = forkInfo.forkDate;
 
           if (forkInfo.isFork) {
             console.log(
               `      📑 Fork detected! Method: ${forkInfo.detectionMethod}, Confidence: ${forkInfo.confidence}`
             );
-            if (forkInfo.parentRepo) {
-              console.log(`      📂 Parent: ${forkInfo.parentRepo}`);
-            }
-            if (
-              forkInfo.sourceRepo &&
-              forkInfo.sourceRepo !== forkInfo.parentRepo
-            ) {
-              console.log(`      🌟 Ultimate source: ${forkInfo.sourceRepo}`);
-            }
-            if (forkInfo.additionalInfo?.parentAccessible === false) {
-              console.log(`      ⚠️  Parent repository not accessible`);
-            }
           } else {
             console.log(
               `      ✅ Not a fork (confidence: ${forkInfo.confidence})`
             );
           }
 
-          // Insert repository
-          const { id: repoId } = await queries.insertRepository(client, {
+          const { id: repoId } = await queries.insertRepository({
             ...repo,
-            is_fork: forkInfo.isFork,
-            fork_date: forkInfo.forkDate,
-            parent_repo: forkInfo.parentRepo,
-            source_repo: forkInfo.sourceRepo,
-            fork_detection_method: forkInfo.detectionMethod,
-            fork_detection_confidence: forkInfo.confidence,
-            owner_id: orgId,
+            parentRepo: forkInfo.parentRepo,
+            sourceRepo: forkInfo.sourceRepo,
+            forkDetectionMethod: forkInfo.detectionMethod,
+            forkDetectionConfidence: forkInfo.confidence,
+            ownerId: orgId,
           });
 
-          // Fetch contributions (Requirement #6)
           console.log(`      📊 Fetching contributor statistics...`);
-
-          if (FETCH_CONFIG.ENABLE_DETAILED_LOGGING) {
-            console.log(
-              `      🔍 Repository details: ${repo.full_name} (⭐${repo.stars_count}, 🍴${repo.forks_count})`
-            );
-          }
 
           let stats = (await makeApiCall(octokit, () =>
             octokit.paginate(octokit.rest.repos.getContributorsStats, {
@@ -375,173 +345,76 @@ async function fetchOrganizationData(
             })
           )) as ContributorStats;
 
-          if (FETCH_CONFIG.ENABLE_DETAILED_LOGGING) {
-            console.log(
-              `      📈 GitHub API returned ${stats.length} contributors with stats`
-            );
-            if (stats.length > 0) {
-              console.log(
-                `      👥 Contributors found: ${stats.map((s) => s.author?.login || "unknown").join(", ")}`
-              );
-            }
-
-            // Also check regular contributors API for comparison
-            try {
-              const regularContributors = await octokit.paginate(
-                octokit.rest.repos.listContributors,
-                {
-                  owner: org,
-                  repo: repo.name,
-                  per_page: 10,
-                }
-              );
-              console.log(
-                `      🔍 Regular contributors API returned ${regularContributors.length} contributors`
-              );
-              if (regularContributors.length > 0) {
-                console.log(
-                  `      👥 Regular contributors: ${regularContributors
-                    .map((c) => c.login)
-                    .slice(0, 5)
-                    .join(", ")}${regularContributors.length > 5 ? "..." : ""}`
-                );
-              }
-            } catch (error) {
-              console.log(
-                `      ⚠️  Regular contributors API failed: ${error instanceof Error ? error.message : String(error)}`
-              );
-            }
-          }
-
-          // Filter out bots if enabled
           if (FETCH_CONFIG.FILTER_BOTS) {
-            const originalCount = stats.length;
             stats = stats.filter(
               (stat) => stat.author && !isBot(stat.author.login)
             );
-            const filteredCount = originalCount - stats.length;
-            if (filteredCount > 0) {
-              console.log(
-                `      🤖 BOT FILTER: Filtered out ${filteredCount} bot contributors (${stats.length} remaining)`
-              );
-            }
           }
 
-          // Apply fetch configuration limits for contributors
           if (FETCH_CONFIG.MAX_CONTRIBUTORS_PER_REPO !== null) {
-            const originalCount = stats.length;
             stats = stats.slice(0, FETCH_CONFIG.MAX_CONTRIBUTORS_PER_REPO);
-            console.log(
-              `      🔧 FETCH LIMIT: Limited to ${FETCH_CONFIG.MAX_CONTRIBUTORS_PER_REPO} contributors (was ${originalCount})`
-            );
           }
 
           let totalCommits = 0;
 
-          if (FETCH_CONFIG.ENABLE_DETAILED_LOGGING) {
-            console.log(
-              `      👥 Processing ${stats.length} contributors for ${repo.full_name}`
-            );
-          }
-
-          // Process contributors in parallel
           await Promise.all(
-            stats.map(async (stat, index) => {
+            stats.map(async (stat) => {
               if (!stat.author) return;
 
-              if (FETCH_CONFIG.ENABLE_DETAILED_LOGGING) {
-                console.log(
-                  `        👤 Processing contributor ${index + 1}/${stats.length}: ${stat.author.login}`
-                );
-              }
-
-              // Insert/Update author
-              const { id: authorId } = await queries.insertAuthor(client, {
-                github_id: stat.author.id,
+              const { id: authorId } = await queries.insertAuthor({
+                githubId: stat.author.id,
                 login: stat.author.login,
                 name: undefined,
-                avatar_url: stat.author.avatar_url,
+                avatarUrl: stat.author.avatar_url,
               });
 
-              if (FETCH_CONFIG.ENABLE_DETAILED_LOGGING) {
-                console.log(
-                  `        💾 Saved author: ${stat.author.login} (ID: ${authorId})`
-                );
-              }
-
-              // Fetch all organizations this contributor belongs to
-              await fetchContributorOrganizations(
-                client,
-                authorId,
-                stat.author.login
-              );
-
-              // Sample commits to collect email addresses
+              await fetchContributorOrganizations(authorId, stat.author.login);
               await sampleCommitsForEmails(
-                client,
                 authorId,
                 stat.author.login,
                 org,
                 repo.name
               );
 
-              // Process weekly contributions
               for (const week of stat.weeks) {
                 if (
-                  !repo.is_fork ||
-                  new Date(week.w * 1000) >= new Date(repo.fork_date || 0)
+                  !repo.isFork ||
+                  new Date(week.w * 1000) >= new Date(repo.forkDate || 0)
                 ) {
                   totalCommits += week.c;
 
-                  // Store daily contributions
-                  await queries.insertDailyContribution(client, {
-                    repository_id: repoId,
-                    author_id: authorId,
+                  await queries.insertDailyContribution({
+                    repositoryId: repoId,
+                    authorId: authorId,
                     date: new Date(week.w * 1000),
                     commits: week.c,
                     additions: week.a,
                     deletions: week.d,
                   });
 
-                  // Track author organization history (Requirement #7)
                   if (week.c > 0) {
-                    await queries.updateAuthorOrgHistory(client, {
-                      author_id: authorId,
-                      organization_id: orgId,
-                      joined_at: new Date(week.w * 1000),
+                    await queries.updateAuthorOrgHistory({
+                      authorId: authorId,
+                      organizationId: orgId,
+                      joinedAt: new Date(week.w * 1000),
                     });
                   }
                 }
               }
 
-              // Update contribution summary for this author and organization
-              await updateContributionSummary(client, authorId, orgId);
+              await updateContributionSummary(authorId, orgId);
             })
           );
 
-          // Update repository commit count
-          await client.query(
-            "UPDATE github.repository SET commits_count = $1 WHERE id = $2",
-            [totalCommits, repoId]
-          );
+          await db
+            .update(repository)
+            .set({ commitsCount: totalCommits })
+            .where(eq(repository.id, repoId));
 
           processedRepos++;
           console.log(
             `      ✅ Processed repository with ${totalCommits} commits from ${stats.length} contributors`
           );
-
-          if (FETCH_CONFIG.ENABLE_DETAILED_LOGGING) {
-            console.log(`      📊 Repository summary for ${repo.full_name}:`);
-            console.log(
-              `         - Fork status: ${forkInfo.isFork ? "Yes" : "No"}${forkInfo.parentRepo ? ` (parent: ${forkInfo.parentRepo})` : ""}`
-            );
-            console.log(`         - Contributors processed: ${stats.length}`);
-            console.log(`         - Total commits: ${totalCommits}`);
-            console.log(
-              `         - Stars: ${repo.stars_count}, Forks: ${repo.forks_count}`
-            );
-          }
-
           console.log(
             `      📈 Progress: ${processedRepos}/${targetRepos.length} repositories`
           );
@@ -552,99 +425,138 @@ async function fetchOrganizationData(
             error.status === 403
           ) {
             console.log(`      ⏳ Rate limit hit, waiting for 60 seconds...`);
-            await delay(60000); // Wait 60 seconds on rate limit
-            throw error; // Retry the operation
+            await delay(60000);
+            throw error;
           }
           throw error;
         }
       })
     );
 
-    // Add delay between batches
     if (i + FETCH_CONFIG.BATCH_SIZE < targetRepos.length) {
       console.log(`    ⏳ Waiting between batches...`);
-      await delay(5000); // 5 seconds between batches
+      await delay(5000);
     }
   }
 
-  // 4. Update organization connections with enhanced query
-  console.log(`  🔄 Updating organization connections...`);
-  await client.query(
-    `
-    WITH contributor_orgs AS (
-      SELECT DISTINCT
-        aoh.organization_id as org_id,
-        aoh.author_id
-      FROM github.author_organization_history aoh
-    ),
-    context_org_contributors AS (
-      -- Get contributors who have commits in our context organizations
-      SELECT DISTINCT dc.author_id
-      FROM github.daily_contribution dc
-      JOIN github.repository r ON r.id = dc.repository_id
-      JOIN github.organization o ON o.id = r.owner_id
-      WHERE o.is_active = true  -- Only our seeding orgs are active
-      AND dc.commits > 0
-    )
-    INSERT INTO github.organization_connection (
-      source_org_id, target_org_id, shared_contributors, last_analyzed_at
-    )
-    SELECT 
-      $1 as source_org_id,
-      o.id as target_org_id,
-      COUNT(DISTINCT co1.author_id) as shared_contributors,
-      NOW() as last_analyzed_at
-    FROM github.organization o
-    JOIN contributor_orgs co1 ON co1.org_id = o.id
-    JOIN context_org_contributors coc ON coc.author_id = co1.author_id
-    WHERE o.id != $1
-    GROUP BY o.id
-    ON CONFLICT (source_org_id, target_org_id) 
-    DO UPDATE SET 
-      shared_contributors = EXCLUDED.shared_contributors,
-      last_analyzed_at = EXCLUDED.last_analyzed_at,
-      updated_at = NOW()
-    `,
-    [orgId]
-  );
+  console.log(`  🔄 Updating organization connections for ${org}...`);
+  const contextOrgContributors = await db
+    .selectDistinct({ authorId: dailyContribution.authorId })
+    .from(dailyContribution)
+    .leftJoin(repository, eq(repository.id, dailyContribution.repositoryId))
+    .where(
+      and(
+        eq(repository.ownerId, orgId),
+        eq(repository.isActive, true),
+        sql`${dailyContribution.commits} > 0`
+      )
+    );
+  const contributorIds = contextOrgContributors.map((c) => c.authorId);
+
+  if (contributorIds.length > 0) {
+    const otherOrgsOfContributors = await db
+      .selectDistinct({
+        orgId: authorOrganizationHistory.organizationId,
+        authorId: authorOrganizationHistory.authorId,
+      })
+      .from(authorOrganizationHistory)
+      .where(inArray(authorOrganizationHistory.authorId, contributorIds));
+
+    const sharedContributorsByOrg = new Map<string, Set<string>>();
+    for (const record of otherOrgsOfContributors) {
+      if (record.orgId !== orgId) {
+        if (!sharedContributorsByOrg.has(record.orgId)) {
+          sharedContributorsByOrg.set(record.orgId, new Set());
+        }
+        sharedContributorsByOrg.get(record.orgId)!.add(record.authorId);
+      }
+    }
+
+    const recordsToInsert = [];
+    for (const [targetOrgId, authorsSet] of sharedContributorsByOrg.entries()) {
+      recordsToInsert.push({
+        sourceOrgId: orgId,
+        targetOrgId: targetOrgId,
+        sharedContributors: authorsSet.size,
+        lastAnalyzedAt: new Date(),
+        updatedAt: new Date(),
+      });
+    }
+
+    if (recordsToInsert.length > 0) {
+      await db
+        .insert(organizationConnection)
+        .values(recordsToInsert)
+        .onConflictDoUpdate({
+          target: [
+            organizationConnection.sourceOrgId,
+            organizationConnection.targetOrgId,
+          ],
+          set: {
+            sharedContributors: sql`excluded.shared_contributors`,
+            lastAnalyzedAt: sql`excluded.last_analyzed_at`,
+            updatedAt: new Date(),
+          },
+        });
+      console.log(
+        `  ✅ Updated ${recordsToInsert.length} organization connections for ${org}.`
+      );
+    }
+  }
 
   console.log(`✅ Completed processing organization: ${org}\n`);
 }
 
-// Add this helper function to update contribution summaries
 async function updateContributionSummary(
-  client: any,
   authorId: string,
   organizationId: string
 ): Promise<void> {
-  await client.query(
-    `
-    INSERT INTO github.contribution_summary (
-      author_id, organization_id,
-      total_commits, first_contribution_at, last_contribution_at
+  const summaryData = await db
+    .select({
+      totalCommits: sql<number>`sum(${dailyContribution.commits})`.mapWith(
+        Number
+      ),
+      firstContributionAt: sql<string>`min(${dailyContribution.date})`,
+      lastContributionAt: sql<string>`max(${dailyContribution.date})`,
+    })
+    .from(dailyContribution)
+    .leftJoin(repository, eq(repository.id, dailyContribution.repositoryId))
+    .where(
+      and(
+        eq(dailyContribution.authorId, authorId),
+        eq(repository.ownerId, organizationId)
+      )
     )
-    SELECT 
-      dc.author_id,
-      r.owner_id as organization_id,
-      SUM(dc.commits) as total_commits,
-      MIN(dc.date) as first_contribution_at,
-      MAX(dc.date) as last_contribution_at
-    FROM github.daily_contribution dc
-    JOIN github.repository r ON r.id = dc.repository_id
-    WHERE dc.author_id = $1 AND r.owner_id = $2
-    GROUP BY dc.author_id, r.owner_id
-    ON CONFLICT (author_id, organization_id) DO UPDATE SET
-      total_commits = EXCLUDED.total_commits,
-      first_contribution_at = EXCLUDED.first_contribution_at,
-      last_contribution_at = EXCLUDED.last_contribution_at,
-      updated_at = NOW()
-    `,
-    [authorId, organizationId]
-  );
+    .groupBy(dailyContribution.authorId, repository.ownerId);
+
+  if (summaryData.length > 0) {
+    const summary = summaryData[0];
+    await db
+      .insert(contributionSummary)
+      .values({
+        authorId: authorId,
+        organizationId: organizationId,
+        totalCommits: summary.totalCommits,
+        firstContributionAt: new Date(summary.firstContributionAt),
+        lastContributionAt: new Date(summary.lastContributionAt),
+        updatedAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: [
+          contributionSummary.authorId,
+          contributionSummary.organizationId,
+        ],
+        set: {
+          totalCommits: summary.totalCommits,
+          firstContributionAt: new Date(summary.firstContributionAt),
+          lastContributionAt: new Date(summary.lastContributionAt),
+          updatedAt: new Date(),
+        },
+      });
+  }
 }
 
 async function fetchAll(fetchType = fetchTypes.top10): Promise<void> {
-  const db = new Database();
   const scriptStartTime = Date.now();
 
   try {
@@ -691,73 +603,54 @@ async function fetchAll(fetchType = fetchTypes.top10): Promise<void> {
     }
     console.log("");
 
-    await db.withTransaction(async (client) => {
-      // Clear existing data if configured
-      if (FETCH_CONFIG.CLEAR_DATA_BEFORE_FETCH) {
-        await queries.clearAllGitHubData(client);
-      }
+    if (FETCH_CONFIG.CLEAR_DATA_BEFORE_FETCH) {
+      await queries.clearAllGitHubData();
+    }
 
-      for (let i = 0; i < organizations.length; i += FETCH_CONFIG.BATCH_SIZE) {
-        const batch = organizations.slice(i, i + FETCH_CONFIG.BATCH_SIZE);
-        await Promise.all(
-          batch.map((org) => fetchOrganizationData(client, org, fetchType))
-        );
-      }
+    for (let i = 0; i < organizations.length; i += FETCH_CONFIG.BATCH_SIZE) {
+      const batch = organizations.slice(i, i + FETCH_CONFIG.BATCH_SIZE);
+      await Promise.all(
+        batch.map((org) => fetchOrganizationData(org, fetchType))
+      );
+    }
 
-      // Generate final summary
-      if (FETCH_CONFIG.ENABLE_DETAILED_LOGGING) {
-        console.log("\n📊 FINAL COLLECTION SUMMARY:");
+    if (FETCH_CONFIG.ENABLE_DETAILED_LOGGING) {
+      console.log("\n📊 FINAL COLLECTION SUMMARY:");
+      const orgCount = await db.select({ value: count() }).from(organization);
+      console.log(`   🏢 Organizations collected: ${orgCount[0].value}`);
 
-        // Count total organizations
-        const orgCount = await client.query(
-          "SELECT COUNT(*) FROM github.organization"
-        );
-        console.log(`   🏢 Organizations collected: ${orgCount.rows[0].count}`);
+      const repoCount = await db.select({ value: count() }).from(repository);
+      console.log(`   📂 Repositories collected: ${repoCount[0].value}`);
 
-        // Count total repositories
-        const repoCount = await client.query(
-          "SELECT COUNT(*) FROM github.repository"
-        );
-        console.log(`   📂 Repositories collected: ${repoCount.rows[0].count}`);
+      const authorCount = await db.select({ value: count() }).from(author);
+      console.log(`   👥 Contributors collected: ${authorCount[0].value}`);
 
-        // Count total authors
-        const authorCount = await client.query(
-          "SELECT COUNT(*) FROM github.author"
-        );
+      const contributionCount = await db
+        .select({ value: count() })
+        .from(dailyContribution);
+      console.log(
+        `   📈 Daily contributions recorded: ${contributionCount[0].value}`
+      );
+
+      const connectionCount = await db
+        .select({ value: count() })
+        .from(organizationConnection);
+      console.log(
+        `   🔗 Organization connections: ${connectionCount[0].value}`
+      );
+
+      if (FETCH_CONFIG.SAMPLE_COMMITS_FOR_EMAILS) {
+        const emailCount = await db
+          .select({ value: count() })
+          .from(authorEmail);
+        const authorsWithEmails = await db
+          .select({ value: count(sql`distinct ${authorEmail.authorId}`) })
+          .from(authorEmail);
         console.log(
-          `   👥 Contributors collected: ${authorCount.rows[0].count}`
+          `   📧 Email addresses collected: ${emailCount[0].value} (${authorsWithEmails[0].value} contributors)`
         );
-
-        // Count total contributions
-        const contributionCount = await client.query(
-          "SELECT COUNT(*) FROM github.daily_contribution"
-        );
-        console.log(
-          `   📈 Daily contributions recorded: ${contributionCount.rows[0].count}`
-        );
-
-        // Count organization connections
-        const connectionCount = await client.query(
-          "SELECT COUNT(*) FROM github.organization_connection"
-        );
-        console.log(
-          `   🔗 Organization connections: ${connectionCount.rows[0].count}`
-        );
-
-        // Count email addresses collected
-        if (FETCH_CONFIG.SAMPLE_COMMITS_FOR_EMAILS) {
-          const emailCount = await client.query(
-            "SELECT COUNT(*) FROM github.author_email"
-          );
-          const authorsWithEmails = await client.query(
-            "SELECT COUNT(DISTINCT author_id) FROM github.author_email"
-          );
-          console.log(
-            `   📧 Email addresses collected: ${emailCount.rows[0].count} (${authorsWithEmails.rows[0].count} contributors)`
-          );
-        }
       }
-    });
+    }
 
     const duration = ((Date.now() - scriptStartTime) / 1000).toFixed(2);
     console.log(

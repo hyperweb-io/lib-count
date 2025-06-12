@@ -1,5 +1,5 @@
-import { Database } from "@cosmology/db-client";
-import { PoolClient } from "pg";
+import { db } from "../../db";
+import * as schema from "../../schema";
 import { packages } from "./data-config";
 import * as fs from "fs";
 import * as path from "path";
@@ -10,75 +10,90 @@ import {
   TotalStats,
   LifetimeStats,
 } from "../../types";
+import {
+  sql,
+  eq,
+  and,
+  gte,
+  lt,
+  sum,
+  min,
+  max,
+  desc,
+  inArray,
+} from "drizzle-orm";
+import { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
+
+type DbConnection = BetterSQLite3Database<typeof schema>;
 
 async function getPackageStats(
-  dbClient: PoolClient,
+  dbClient: DbConnection,
   packageName: string
 ): Promise<PackageStats | null> {
-  // First, check the date range of available data for this package
-  const dataRangeCheck = await dbClient.query(
-    `
-    SELECT 
-      MIN(date) as oldest_date,
-      MAX(date) as latest_date,
-      CURRENT_DATE - MAX(date) as days_since_update
-    FROM npm_count.daily_downloads
-    WHERE package_name = $1
-    GROUP BY package_name
-    `,
-    [packageName]
+  const dataRangeCheck = await dbClient
+    .select({
+      oldestDate: min(schema.dailyDownloads.date),
+      latestDate: max(schema.dailyDownloads.date),
+    })
+    .from(schema.dailyDownloads)
+    .where(eq(schema.dailyDownloads.packageName, packageName))
+    .groupBy(schema.dailyDownloads.packageName);
+
+  if (dataRangeCheck.length === 0 || !dataRangeCheck[0].latestDate) return null;
+
+  const latestDate = dataRangeCheck[0].latestDate;
+  const daysSinceUpdate = Math.floor(
+    (new Date().getTime() - latestDate.getTime()) / (1000 * 3600 * 24)
   );
+  const isStale = daysSinceUpdate > 7;
 
-  // If no data found for this package, return null
-  if (dataRangeCheck.rows.length === 0) return null;
-
-  const latestDate = dataRangeCheck.rows[0].latest_date;
-  const daysSinceUpdate = parseInt(dataRangeCheck.rows[0].days_since_update);
-  const isStale = daysSinceUpdate > 7; // Consider data stale if more than 7 days old
-
-  // Adjust date ranges based on data availability
   let weekStart, monthStart;
+  const now = new Date();
 
   if (isStale) {
-    // If data is stale, use the last available week/month of data
-    weekStart = `'${latestDate}'::date - INTERVAL '7 days'`;
-    monthStart = `'${latestDate}'::date - INTERVAL '30 days'`;
+    weekStart = new Date(latestDate);
+    weekStart.setDate(weekStart.getDate() - 7);
+    monthStart = new Date(latestDate);
+    monthStart.setMonth(monthStart.getMonth() - 1);
     console.log(
       `Using historical data for ${packageName} (${daysSinceUpdate} days old)`
     );
   } else {
-    // Use current time periods if data is fresh
-    weekStart = "NOW() - INTERVAL '7 days'";
-    monthStart = "NOW() - INTERVAL '30 days'";
+    weekStart = new Date(now);
+    weekStart.setDate(weekStart.getDate() - 7);
+    monthStart = new Date(now);
+    monthStart.setMonth(monthStart.getMonth() - 1);
   }
 
-  // Get download stats using appropriate date ranges
-  const result = await dbClient.query(
-    `
-    SELECT 
-      p.package_name,
-      COALESCE(SUM(d.download_count), 0) as total_downloads,
-      COALESCE(SUM(CASE WHEN d.date >= ${monthStart} THEN d.download_count ELSE 0 END), 0) as monthly_downloads,
-      COALESCE(SUM(CASE WHEN d.date >= ${weekStart} THEN d.download_count ELSE 0 END), 0) as weekly_downloads
-    FROM npm_count.npm_package p
-    LEFT JOIN npm_count.daily_downloads d ON d.package_name = p.package_name
-    WHERE p.package_name = $1 AND p.is_active = true
-    GROUP BY p.package_name
-    `,
-    [packageName]
-  );
+  const result = await dbClient
+    .select({
+      packageName: schema.npmPackage.packageName,
+      totalDownloads: sql<number>`cast(coalesce(sum(${schema.dailyDownloads.downloadCount}), 0) as int)`,
+      monthlyDownloads: sql<number>`cast(coalesce(sum(case when ${schema.dailyDownloads.date} >= ${monthStart} then ${schema.dailyDownloads.downloadCount} else 0 end), 0) as int)`,
+      weeklyDownloads: sql<number>`cast(coalesce(sum(case when ${schema.dailyDownloads.date} >= ${weekStart} then ${schema.dailyDownloads.downloadCount} else 0 end), 0) as int)`,
+    })
+    .from(schema.npmPackage)
+    .leftJoin(
+      schema.dailyDownloads,
+      eq(schema.dailyDownloads.packageName, schema.npmPackage.packageName)
+    )
+    .where(
+      and(
+        eq(schema.npmPackage.packageName, packageName),
+        eq(schema.npmPackage.isActive, true)
+      )
+    )
+    .groupBy(schema.npmPackage.packageName);
 
-  if (result.rows.length === 0) return null;
+  if (result.length === 0) return null;
 
-  // Debug log to check if weekly data is being returned from the database
   const stats = {
     name: packageName,
-    total: parseInt(result.rows[0].total_downloads),
-    monthly: parseInt(result.rows[0].monthly_downloads),
-    weekly: parseInt(result.rows[0].weekly_downloads),
+    total: result[0].totalDownloads,
+    monthly: result[0].monthlyDownloads,
+    weekly: result[0].weeklyDownloads,
   };
 
-  // Log for this package if it has non-zero downloads
   if (stats.total > 0) {
     console.log(`Package ${packageName} stats:`, {
       total: stats.total,
@@ -92,7 +107,7 @@ async function getPackageStats(
 }
 
 async function getCategoryStats(
-  dbClient: PoolClient,
+  dbClient: DbConnection,
   category: string,
   packageNames: string[]
 ): Promise<CategoryStats> {
@@ -170,46 +185,52 @@ function generateTotalSection(totals: TotalStats): string {
 }
 
 async function getLifetimeDownloadsByCategory(
-  dbClient: PoolClient
+  dbClient: DbConnection
 ): Promise<LifetimeStats> {
   console.log("Executing getLifetimeDownloadsByCategory...");
 
-  // Let's check if there is any recent data in the daily_downloads table
-  const recentDataCheck = await dbClient.query(`
-    SELECT 
-      MIN(date) as oldest_date,
-      MAX(date) as newest_date,
-      CURRENT_DATE - MAX(date) as days_since_update,
-      COUNT(*) as total_records,
-      COUNT(CASE WHEN date >= NOW() - INTERVAL '7 days' THEN 1 ELSE NULL END) as records_last_week
-    FROM npm_count.daily_downloads;
-  `);
+  const recentDataCheck = await dbClient
+    .select({
+      oldestDate: min(schema.dailyDownloads.date),
+      newestDate: max(schema.dailyDownloads.date),
+      totalRecords: sql<number>`count(*)`,
+      recordsLastWeek: sql<number>`count(case when ${schema.dailyDownloads.date} >= date('now', '-7 days') then 1 else null end)`,
+    })
+    .from(schema.dailyDownloads);
 
-  let latestDate: string | null = null;
+  let latestDate: Date | null = null;
   let isDataStale = false;
-  let weekStart = "NOW() - INTERVAL '7 days'";
-  let monthStart = "NOW() - INTERVAL '30 days'";
+  let weekStart, monthStart;
+  const now = new Date();
 
-  if (recentDataCheck.rows.length > 0) {
-    const dataInfo = recentDataCheck.rows[0];
-    latestDate = dataInfo.newest_date;
-    const daysSinceUpdate = parseInt(dataInfo.days_since_update);
-    isDataStale = daysSinceUpdate > 7; // Consider data stale if more than 7 days old
+  if (recentDataCheck.length > 0 && recentDataCheck[0].newestDate) {
+    const dataInfo = recentDataCheck[0];
+    latestDate = dataInfo.newestDate;
+    const daysSinceUpdate = Math.floor(
+      (now.getTime() - latestDate.getTime()) / (1000 * 3600 * 24)
+    );
+    isDataStale = daysSinceUpdate > 7;
 
     console.log("Daily downloads data range:", {
-      oldest_date: dataInfo.oldest_date,
+      oldest_date: dataInfo.oldestDate,
       newest_date: latestDate,
       days_since_update: daysSinceUpdate,
-      total_records: dataInfo.total_records,
-      records_last_week: dataInfo.records_last_week,
+      total_records: dataInfo.totalRecords,
+      records_last_week: dataInfo.recordsLastWeek,
       is_stale: isDataStale,
     });
 
     if (isDataStale) {
-      // If data is stale, use the last available week/month of data
-      weekStart = `'${latestDate}'::date - INTERVAL '7 days'`;
-      monthStart = `'${latestDate}'::date - INTERVAL '30 days'`;
+      weekStart = new Date(latestDate);
+      weekStart.setDate(weekStart.getDate() - 7);
+      monthStart = new Date(latestDate);
+      monthStart.setMonth(monthStart.getMonth() - 1);
       console.log(`Using historical data periods relative to ${latestDate}`);
+    } else {
+      weekStart = new Date(now);
+      weekStart.setDate(weekStart.getDate() - 7);
+      monthStart = new Date(now);
+      monthStart.setMonth(monthStart.getMonth() - 1);
     }
   } else {
     console.log("No data found in daily_downloads table");
@@ -220,58 +241,48 @@ async function getLifetimeDownloadsByCategory(
     };
   }
 
-  // Get all packages and their stats with adjusted date ranges
-  const result = await dbClient.query(`
-    WITH total_stats AS (
-      SELECT COALESCE(SUM(download_count), 0) as total_lifetime_downloads
-      FROM npm_count.daily_downloads
-    ),
-    package_stats AS (
-      SELECT 
-        p.package_name,
-        COALESCE(SUM(d.download_count), 0) as total_downloads,
-        COALESCE(SUM(CASE WHEN d.date >= ${monthStart} THEN d.download_count ELSE 0 END), 0) as monthly_downloads,
-        COALESCE(SUM(CASE WHEN d.date >= ${weekStart} THEN d.download_count ELSE 0 END), 0) as weekly_downloads
-      FROM npm_count.npm_package p
-      LEFT JOIN npm_count.daily_downloads d ON d.package_name = p.package_name
-      GROUP BY p.package_name
+  const totalLifetimeDownloadsResult = await dbClient
+    .select({
+      total: sql<number>`cast(sum(${schema.dailyDownloads.downloadCount}) as int)`,
+    })
+    .from(schema.dailyDownloads);
+
+  const totalLifetimeDownloads = totalLifetimeDownloadsResult[0].total || 0;
+
+  const result = await dbClient
+    .select({
+      packageName: schema.npmPackage.packageName,
+      totalDownloads: sql<number>`cast(coalesce(sum(${schema.dailyDownloads.downloadCount}), 0) as int)`,
+      monthlyDownloads: sql<number>`cast(coalesce(sum(case when ${schema.dailyDownloads.date} >= ${monthStart} then ${schema.dailyDownloads.downloadCount} else 0 end), 0) as int)`,
+      weeklyDownloads: sql<number>`cast(coalesce(sum(case when ${schema.dailyDownloads.date} >= ${weekStart} then ${schema.dailyDownloads.downloadCount} else 0 end), 0) as int)`,
+    })
+    .from(schema.npmPackage)
+    .leftJoin(
+      schema.dailyDownloads,
+      eq(schema.npmPackage.packageName, schema.dailyDownloads.packageName)
     )
-    SELECT 
-      ps.*,
-      t.total_lifetime_downloads
-    FROM package_stats ps
-    CROSS JOIN total_stats t;
-  `);
+    .groupBy(schema.npmPackage.packageName);
 
-  console.log("Total rows returned from DB:", result.rows.length);
+  console.log("Total rows returned from DB:", result.length);
 
-  // Log a few sample rows to see the data structure and values
-  if (result.rows.length > 0) {
-    console.log("Sample row 1:", JSON.stringify(result.rows[0]));
-    if (result.rows.length > 1) {
-      console.log("Sample row 2:", JSON.stringify(result.rows[1]));
+  if (result.length > 0) {
+    console.log("Sample row 1:", JSON.stringify(result[0]));
+    if (result.length > 1) {
+      console.log("Sample row 2:", JSON.stringify(result[1]));
     }
   }
 
-  let totalLifetimeDownloads = 0;
   const allPackages = new Map<string, PackageStats>();
 
-  // Process all packages first
-  result.rows.forEach((row, index) => {
-    if (index === 0) {
-      totalLifetimeDownloads = parseInt(row.total_lifetime_downloads);
-      console.log("Total lifetime downloads:", totalLifetimeDownloads);
-    }
-
+  result.forEach((row) => {
     const packageStats: PackageStats = {
-      name: row.package_name,
-      total: parseInt(row.total_downloads),
-      monthly: parseInt(row.monthly_downloads),
-      weekly: parseInt(row.weekly_downloads),
+      name: row.packageName,
+      total: row.totalDownloads,
+      monthly: row.monthlyDownloads,
+      weekly: row.weeklyDownloads,
     };
 
-    // Log some packages with their weekly downloads to verify data
-    if (packageStats.weekly > 0 && index < 5) {
+    if (packageStats.weekly > 0) {
       console.log(`Found package with weekly downloads: ${packageStats.name}`, {
         total: packageStats.total,
         monthly: packageStats.monthly,
@@ -279,10 +290,9 @@ async function getLifetimeDownloadsByCategory(
       });
     }
 
-    allPackages.set(row.package_name, packageStats);
+    allPackages.set(row.packageName, packageStats);
   });
 
-  // Debug output for packages
   console.log("Total packages in DB:", allPackages.size);
 
   // Count packages with non-zero weekly downloads
@@ -573,7 +583,6 @@ async function generateBadges(
 }
 
 async function generateReport(): Promise<string> {
-  const db = new Database();
   const categoryStats = new Map<string, CategoryStats>();
   const totals: TotalStats = {
     web2: { total: 0, monthly: 0, weekly: 0 },
@@ -586,9 +595,9 @@ async function generateReport(): Promise<string> {
   try {
     let lifetimeStats: LifetimeStats;
 
-    await db.withTransaction(async (dbClient: PoolClient) => {
+    await db.transaction(async (tx) => {
       // Get lifetime stats first
-      lifetimeStats = await getLifetimeDownloadsByCategory(dbClient);
+      lifetimeStats = await getLifetimeDownloadsByCategory(tx);
       totals.lifetime = lifetimeStats.total;
 
       // Add uncategorized package stats to utils category first
@@ -600,7 +609,7 @@ async function generateReport(): Promise<string> {
 
       // Gather stats for each category from data-config
       for (const [category, packageNames] of Object.entries(packages)) {
-        const stats = await getCategoryStats(dbClient, category, packageNames);
+        const stats = await getCategoryStats(tx, category, packageNames);
         categoryStats.set(category, stats);
 
         // Update totals based on category
@@ -708,7 +717,6 @@ async function run(): Promise<void> {
 }
 
 async function generateAndWriteBadges(): Promise<void> {
-  const db = new Database();
   const categoryStats = new Map<string, CategoryStats>();
   const totals: TotalStats = {
     web2: { total: 0, monthly: 0, weekly: 0 },
@@ -721,9 +729,9 @@ async function generateAndWriteBadges(): Promise<void> {
   try {
     console.log("Starting badge generation with database query...");
 
-    await db.withTransaction(async (dbClient: PoolClient) => {
+    await db.transaction(async (tx) => {
       // Get lifetime stats first
-      const lifetimeStats = await getLifetimeDownloadsByCategory(dbClient);
+      const lifetimeStats = await getLifetimeDownloadsByCategory(tx);
       totals.lifetime = lifetimeStats.total;
 
       console.log("Lifetime stats total:", lifetimeStats.total);
@@ -750,7 +758,7 @@ async function generateAndWriteBadges(): Promise<void> {
         console.log(
           `Processing category ${category} with ${packageNames.length} packages`
         );
-        const stats = await getCategoryStats(dbClient, category, packageNames);
+        const stats = await getCategoryStats(tx, category, packageNames);
         categoryStats.set(category, stats);
 
         // Update totals based on category
