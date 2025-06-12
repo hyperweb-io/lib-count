@@ -1,63 +1,67 @@
-import { Database } from "@cosmology/db-client";
-import { PoolClient } from "pg";
-import { NPMRegistryClient } from "../../npm-client";
-import { insertPackage } from "./npm.queries";
+import { db } from "../../db";
+import { NPMRegistryClient, SearchOpts } from "../../npm-client";
+import {
+  packages as whitelistedPackages,
+  blacklistConfig,
+} from "./data-config";
 import { delay } from "../../utils";
-import { packages, blacklistConfig } from "./data-config";
+import { eq, sql, notInArray, inArray, like } from "drizzle-orm";
+import { category, npmPackage, packageCategory } from "../../schema";
+import { randomUUID } from "crypto";
 
 const npmClient = new NPMRegistryClient({
   restEndpoint: "https://registry.npmjs.org",
 });
 
-const CONCURRENT_TASKS = 100; // Number of concurrent tasks
+const CONCURRENT_TASKS = 30; // Number of concurrent tasks
 const RATE_LIMIT_DELAY = 50; // ms between requests
 
 async function ensureCategories(
-  dbClient: PoolClient,
   categoryNames: string[]
 ): Promise<Map<string, string>> {
   const categoryMap = new Map<string, string>();
 
   for (const name of categoryNames) {
-    const result = await dbClient.query(
-      `
-      INSERT INTO npm_count.category (name)
-      VALUES ($1)
-      ON CONFLICT (name) DO UPDATE SET updated_at = now()
-      RETURNING id
-      `,
-      [name]
-    );
-    categoryMap.set(name, result.rows[0].id);
+    const result = await db
+      .insert(category)
+      .values({
+        name,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        description: "",
+        id: randomUUID(),
+      })
+      .onConflictDoUpdate({
+        target: category.name,
+        set: { updatedAt: new Date() },
+      })
+      .returning({ id: category.id });
+    categoryMap.set(name, result[0].id);
   }
 
   return categoryMap;
 }
 
 async function updatePackageCategories(
-  dbClient: PoolClient,
   packageName: string,
   categoryIds: string[]
 ): Promise<void> {
-  await dbClient.query(
-    `DELETE FROM npm_count.package_category WHERE package_id = $1`,
-    [packageName]
-  );
+  await db
+    .delete(packageCategory)
+    .where(eq(packageCategory.packageId, packageName));
 
   if (categoryIds.length > 0) {
-    const values = categoryIds.map((_, i) => `($1, $${i + 2})`).join(", ");
-    await dbClient.query(
-      `
-      INSERT INTO npm_count.package_category (package_id, category_id)
-      VALUES ${values}
-      `,
-      [packageName, ...categoryIds]
+    await db.insert(packageCategory).values(
+      categoryIds.map((id) => ({
+        packageId: packageName,
+        categoryId: id,
+        createdAt: new Date(),
+      }))
     );
   }
 }
 
 async function processPackage(
-  dbClient: PoolClient,
   packageName: string,
   publishDate: string,
   current: number,
@@ -66,12 +70,22 @@ async function processPackage(
   const startTime = Date.now();
   try {
     const creationDate = await npmClient.creationDate(packageName);
-    await insertPackage(
-      dbClient,
-      packageName,
-      new Date(creationDate),
-      new Date(publishDate)
-    );
+    await db
+      .insert(npmPackage)
+      .values({
+        packageName,
+        creationDate: new Date(creationDate),
+        lastPublishDate: new Date(publishDate),
+      })
+      .onConflictDoUpdate({
+        target: npmPackage.packageName,
+        set: {
+          lastPublishDate: new Date(publishDate),
+          lastFetchedDate: new Date(),
+          isActive: true,
+          updatedAt: new Date(),
+        },
+      });
     const duration = ((Date.now() - startTime) / 1000).toFixed(2);
     console.log(`[${current}/${total}] ✓ ${packageName} (${duration}s)`);
   } catch (error) {
@@ -85,7 +99,6 @@ async function processPackage(
 }
 
 async function processBatch(
-  dbClient: PoolClient,
   packages: Array<{ name: string; date: string }>,
   startIndex: number,
   total: number
@@ -93,27 +106,19 @@ async function processBatch(
   const tasks = packages.map((pkg, index) =>
     (async () => {
       await delay(index * RATE_LIMIT_DELAY);
-      return processPackage(
-        dbClient,
-        pkg.name,
-        pkg.date,
-        startIndex + index + 1,
-        total
-      );
+      return processPackage(pkg.name, pkg.date, startIndex + index + 1, total);
     })()
   );
 
   await Promise.all(tasks);
 }
 
-async function processWhitelistAndCategories(
-  dbClient: PoolClient
-): Promise<void> {
+async function processWhitelistAndCategories(): Promise<void> {
   console.log("\nProcessing whitelist and categories...");
 
   // Collect all whitelisted packages with their categories
   const packageCategories = new Map<string, string[]>();
-  Object.entries(packages).forEach(([category, packageNames]) => {
+  Object.entries(whitelistedPackages).forEach(([category, packageNames]) => {
     packageNames.forEach((packageName) => {
       const categories = packageCategories.get(packageName) || [];
       categories.push(category);
@@ -122,131 +127,114 @@ async function processWhitelistAndCategories(
   });
 
   // First, ensure all whitelisted packages exist in npm_package table
-  const whitelistedPackages = Array.from(packageCategories.keys());
-  await dbClient.query(
-    `
-    INSERT INTO npm_count.npm_package (package_name, creation_date, last_publish_date)
-    SELECT 
-      pkg.name,
-      CURRENT_DATE,
-      CURRENT_DATE
-    FROM unnest($1::text[]) AS pkg(name)
-    WHERE NOT EXISTS (
-      SELECT 1 FROM npm_count.npm_package WHERE package_name = pkg.name
+  const allWhitelistedPackages = Array.from(packageCategories.keys());
+  await db
+    .insert(npmPackage)
+    .values(
+      allWhitelistedPackages.map((p) => ({
+        packageName: p,
+        creationDate: new Date(),
+        lastPublishDate: new Date(),
+      }))
     )
-    `,
-    [whitelistedPackages]
-  );
+    .onConflictDoNothing();
 
   // Ensure all categories exist
-  const categories = new Set(Object.keys(packages));
-  const categoryMap = await ensureCategories(dbClient, Array.from(categories));
+  const categories = new Set(Object.keys(whitelistedPackages));
+  const categoryMap = await ensureCategories(Array.from(categories));
 
   // Update package categories
   for (const [packageName, categories] of packageCategories.entries()) {
     const categoryIds = categories.map((cat) => categoryMap.get(cat)!);
-    await updatePackageCategories(dbClient, packageName, categoryIds);
+    await updatePackageCategories(packageName, categoryIds);
     console.log(
       `✓ Updated ${packageName} with categories: ${categories.join(", ")}`
     );
   }
 
   // Deactivate packages not in whitelist
-  const result = await dbClient.query(
-    `
-    UPDATE npm_count.npm_package 
-    SET is_active = false, updated_at = now()
-    WHERE package_name NOT IN (${whitelistedPackages
-      .map((_, i) => `$${i + 1}`)
-      .join(", ")})
-    RETURNING package_name
-    `,
-    whitelistedPackages
-  );
+  const result = await db
+    .update(npmPackage)
+    .set({ isActive: false, updatedAt: new Date() })
+    .where(notInArray(npmPackage.packageName, allWhitelistedPackages))
+    .returning({ packageName: npmPackage.packageName });
 
-  if (result.rows.length > 0) {
+  if (result.length > 0) {
     console.log("\nDeactivated non-whitelisted packages:");
-    result.rows.forEach((row) => console.log(`- ${row.package_name}`));
+    result.forEach((row) => console.log(`- ${row.packageName}`));
   }
 }
 
-async function processBlacklist(dbClient: PoolClient): Promise<void> {
+async function processBlacklist(): Promise<void> {
   console.log("\nProcessing blacklist...");
 
-  // Deactivate packages in blacklisted namespaces and specific packages
-  const result = await dbClient.query(
-    `
-    UPDATE npm_count.npm_package 
-    SET is_active = false, updated_at = now()
-    WHERE package_name LIKE ANY($1)
-    OR package_name = ANY($2)
-    RETURNING package_name
-    `,
-    [
-      blacklistConfig.namespaces.map((namespace) => `${namespace}%`),
-      blacklistConfig.packages,
-    ]
+  const likeConditions = blacklistConfig.namespaces.map((ns) =>
+    like(npmPackage.packageName, `${ns}%`)
   );
+  const inCondition = inArray(npmPackage.packageName, blacklistConfig.packages);
 
-  if (result.rows.length > 0) {
+  const result = await db
+    .update(npmPackage)
+    .set({ isActive: false, updatedAt: new Date() })
+    .where(sql`${likeConditions.join(" OR ")} OR ${inCondition}`)
+    .returning({ packageName: npmPackage.packageName });
+
+  if (result.length > 0) {
     console.log("\nDeactivated blacklisted packages:");
-    result.rows.forEach((row) => console.log(`- ${row.package_name}`));
+    result.forEach((row) => console.log(`- ${row.packageName}`));
   }
 }
 
 async function run(): Promise<void> {
-  const db = new Database();
   const scriptStartTime = Date.now();
 
   try {
-    await db.withTransaction(async (dbClient: PoolClient) => {
-      console.log("Fetching all packages from npm registry...");
+    console.log("Fetching all packages from npm registry...");
 
-      const searchResults = await Promise.all([
-        npmClient.getAllSearchResults({
-          type: "author",
-          username: "pyramation",
-        }),
-        npmClient.getAllSearchResults({
-          type: "maintainer",
-          username: "pyramation",
-        }),
-        npmClient.getAllSearchResults({
-          type: "publisher",
-          username: "pyramation",
-        }),
-      ]);
+    const searchOpts: SearchOpts[] = [
+      {
+        type: "author",
+        username: "pyramation",
+      },
+      {
+        type: "maintainer",
+        username: "pyramation",
+      },
+      {
+        type: "publisher",
+        username: "pyramation",
+      },
+    ];
 
-      const uniquePackages = new Map();
-      searchResults.forEach((result) => {
-        result.objects.forEach((obj) => {
-          uniquePackages.set(obj.package.name, obj.package);
-        });
-      });
+    const { objects: packages } = await npmClient.processSearches(searchOpts);
 
-      const packages = Array.from(uniquePackages.values());
-      const totalPackages = packages.length;
+    packages.sort(
+      (a, b) => b.score.detail.popularity - a.score.detail.popularity
+    );
 
-      console.log(
-        `Found ${totalPackages} unique packages to process with ${CONCURRENT_TASKS} concurrent tasks`
-      );
+    const totalPackages = packages.length;
 
-      for (let i = 0; i < packages.length; i += CONCURRENT_TASKS) {
-        const batch = packages.slice(i, i + CONCURRENT_TASKS);
-        await processBatch(dbClient, batch, i, totalPackages);
-      }
+    console.log(
+      `Found ${totalPackages} unique packages to process with ${CONCURRENT_TASKS} concurrent tasks`
+    );
 
-      // Process whitelist and categories after fetching packages
-      await processWhitelistAndCategories(dbClient);
+    for (let i = 0; i < packages.length; i += CONCURRENT_TASKS) {
+      const batch = packages
+        .slice(i, i + CONCURRENT_TASKS)
+        .map((p) => ({ name: p.package.name, date: p.package.date }));
+      await processBatch(batch, i, totalPackages);
+    }
 
-      // Process blacklist after whitelist
-      await processBlacklist(dbClient);
+    // Process whitelist and categories after fetching packages
+    await processWhitelistAndCategories();
 
-      const duration = ((Date.now() - scriptStartTime) / 1000).toFixed(2);
-      console.log(
-        `\nAll operations completed successfully in ${duration} seconds!`
-      );
-    });
+    // Process blacklist after whitelist
+    await processBlacklist();
+
+    const duration = ((Date.now() - scriptStartTime) / 1000).toFixed(2);
+    console.log(
+      `\nAll operations completed successfully in ${duration} seconds!`
+    );
   } catch (error) {
     const duration = ((Date.now() - scriptStartTime) / 1000).toFixed(2);
     console.error(`Transaction failed after ${duration} seconds:`, error);

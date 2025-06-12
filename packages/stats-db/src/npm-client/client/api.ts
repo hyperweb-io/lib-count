@@ -81,23 +81,24 @@ export class NPMRegistryClient extends APIClient {
 
   public async processSearches(searchOpts: SearchOpts[]): Promise<NPMResponse> {
     const packageMap = new Map<string, NPMObject>();
-    let totalCount = 0;
+
+    const searchResults = await Promise.all(
+      searchOpts.map((opts) => this.getAllSearchResults(opts))
+    );
+
     let lastTime = "";
-
-    for (const opts of searchOpts) {
-      const data = await this.getAllSearchResults(opts);
-      totalCount += data.total;
+    for (const data of searchResults) {
       lastTime = data.time;
-
-      // Dedupe by package name
       for (const obj of data.objects) {
         packageMap.set(obj.package.name, obj);
       }
     }
 
+    const uniqueObjects = Array.from(packageMap.values());
+
     return {
-      objects: Array.from(packageMap.values()),
-      total: totalCount,
+      objects: uniqueObjects,
+      total: uniqueObjects.length,
       time: lastTime,
     };
   }

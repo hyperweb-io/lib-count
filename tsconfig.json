@@ -9,8 +9,30 @@
     "skipLibCheck": true,
     "sourceMap": false,
     "declaration": true,
+    "declarationMap": true,
     "resolveJsonModule": true,
-    "moduleResolution": "node"
+    "moduleResolution": "node",
+    "composite": true,
+    "baseUrl": ".",
+    "paths": {
+      "@stats-db/*": [
+        "packages/stats-db/src/*"
+      ],
+      "@data-vis/*": [
+        "packages/data-vis/src/*"
+      ]
+    }
   },
-  "exclude": ["dist", "node_modules"]
+  "exclude": [
+    "dist",
+    "node_modules"
+  ],
+  "references": [
+    {
+      "path": "packages/stats-db"
+    },
+    {
+      "path": "packages/data-vis"
+    }
+  ]
 }

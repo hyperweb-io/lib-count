@@ -1,7 +1,8 @@
-import { Database } from "@cosmology/db-client";
-import { PoolClient } from "pg";
 import * as fs from "fs";
 import * as path from "path";
+import { db } from "../../db";
+import { dailyDownloads, npmPackage } from "../../schema";
+import { and, eq, sql, max } from "drizzle-orm";
 import { packages } from "./data-config";
 import {
   DownloadStats,
@@ -16,43 +17,24 @@ function formatNumber(num: number): string {
 }
 
 async function getPackageStats(
-  dbClient: PoolClient,
   packageName: string
 ): Promise<PackageStats | null> {
-  const dataRangeCheck = await dbClient.query(
-    `
-    SELECT
-      MIN(date) as oldest_date,
-      MAX(date) as latest_date
-    FROM npm_count.daily_downloads
-    WHERE package_name = $1
-    GROUP BY package_name
-    `,
-    [packageName]
-  );
+  const dataRangeCheck = await db
+    .select({
+      latestDate: max(dailyDownloads.date),
+    })
+    .from(dailyDownloads)
+    .where(eq(dailyDownloads.packageName, packageName));
 
-  if (dataRangeCheck.rows.length === 0) {
+  if (dataRangeCheck.length === 0 || !dataRangeCheck[0].latestDate) {
     return null;
   }
 
-  const { oldest_date, latest_date: db_latest_date_str } =
-    dataRangeCheck.rows[0];
+  const dbLatestDate = dataRangeCheck[0].latestDate;
 
   const clientNow = new Date();
-  const clientNowDateString = clientNow.toISOString().split("T")[0];
-
-  let effectiveLatestDate: Date;
-  if (db_latest_date_str) {
-    const dbLatestDate = new Date(db_latest_date_str);
-    effectiveLatestDate = dbLatestDate > clientNow ? clientNow : dbLatestDate;
-  } else {
-    // No data for package, treat as very old, though dataRangeCheck should prevent this.
-    // Fallback to a very old date if db_latest_date_str is null/undefined for some reason.
-    effectiveLatestDate = new Date("1970-01-01");
-  }
-  const effectiveLatestDateString = effectiveLatestDate
-    .toISOString()
-    .split("T")[0];
+  const effectiveLatestDate =
+    dbLatestDate > clientNow ? clientNow : dbLatestDate;
 
   const daysSinceUpdate = Math.floor(
     (clientNow.getTime() - effectiveLatestDate.getTime()) / (1000 * 3600 * 24)
@@ -60,56 +42,58 @@ async function getPackageStats(
 
   const isStale = daysSinceUpdate > 7;
 
-  let weekStartDateString: string;
-  let monthStartDateString: string;
+  let weekStartDate: Date, monthStartDate: Date;
 
   if (isStale) {
-    const weekStartDate = new Date(effectiveLatestDate);
+    weekStartDate = new Date(effectiveLatestDate);
     weekStartDate.setDate(effectiveLatestDate.getDate() - 7);
-    weekStartDateString = weekStartDate.toISOString().split("T")[0];
 
-    const monthStartDate = new Date(effectiveLatestDate);
-    monthStartDate.setDate(effectiveLatestDate.getDate() - 30); // Approx month
-    monthStartDateString = monthStartDate.toISOString().split("T")[0];
+    monthStartDate = new Date(effectiveLatestDate);
+    monthStartDate.setDate(effectiveLatestDate.getDate() - 30);
   } else {
-    const weekStartDate = new Date(clientNow);
+    weekStartDate = new Date(clientNow);
     weekStartDate.setDate(clientNow.getDate() - 7);
-    weekStartDateString = weekStartDate.toISOString().split("T")[0];
 
-    const monthStartDate = new Date(clientNow);
-    monthStartDate.setDate(clientNow.getDate() - 30); // Approx month
-    monthStartDateString = monthStartDate.toISOString().split("T")[0];
+    monthStartDate = new Date(clientNow);
+    monthStartDate.setDate(clientNow.getDate() - 30);
   }
 
-  const result = await dbClient.query(
-    `
-    SELECT
-      p.package_name,
-      COALESCE(SUM(d.download_count), 0) as total_downloads,
-      COALESCE(SUM(CASE WHEN d.date >= '${monthStartDateString}'::date ${isStale ? `AND d.date <= '${effectiveLatestDateString}'::date` : ""} THEN d.download_count ELSE 0 END), 0) as monthly_downloads,
-      COALESCE(SUM(CASE WHEN d.date >= '${weekStartDateString}'::date ${isStale ? `AND d.date <= '${effectiveLatestDateString}'::date` : ""} THEN d.download_count ELSE 0 END), 0) as weekly_downloads
-    FROM npm_count.npm_package p
-    LEFT JOIN npm_count.daily_downloads d ON d.package_name = p.package_name
-    WHERE p.package_name = $1 AND p.is_active = true
-    GROUP BY p.package_name
-    `,
-    [packageName]
-  );
+  const periodEndClause = isStale
+    ? sql`and ${dailyDownloads.date} <= ${effectiveLatestDate}`
+    : sql``;
 
-  if (result.rows.length === 0) return null;
+  const result = await db
+    .select({
+      totalDownloads: sql<string>`COALESCE(SUM(${dailyDownloads.downloadCount}), '0')`,
+      monthlyDownloads: sql<string>`COALESCE(SUM(CASE WHEN ${dailyDownloads.date} >= ${monthStartDate} ${periodEndClause} THEN ${dailyDownloads.downloadCount} ELSE 0 END), '0')`,
+      weeklyDownloads: sql<string>`COALESCE(SUM(CASE WHEN ${dailyDownloads.date} >= ${weekStartDate} ${periodEndClause} THEN ${dailyDownloads.downloadCount} ELSE 0 END), '0')`,
+    })
+    .from(npmPackage)
+    .leftJoin(
+      dailyDownloads,
+      eq(npmPackage.packageName, dailyDownloads.packageName)
+    )
+    .where(
+      and(
+        eq(npmPackage.packageName, packageName),
+        eq(npmPackage.isActive, true)
+      )
+    )
+    .groupBy(npmPackage.packageName);
+
+  if (result.length === 0) return null;
 
   const stats = {
     name: packageName,
-    total: parseInt(result.rows[0].total_downloads),
-    monthly: parseInt(result.rows[0].monthly_downloads),
-    weekly: parseInt(result.rows[0].weekly_downloads),
+    total: parseInt(result[0].totalDownloads),
+    monthly: parseInt(result[0].monthlyDownloads),
+    weekly: parseInt(result[0].weeklyDownloads),
   };
   console.log(`[getPackageStats] Calculated stats for ${packageName}:`, stats);
   return stats;
 }
 
 async function getCategoryStats(
-  dbClient: PoolClient,
   category: string,
   packageNames: string[]
 ): Promise<CategoryStats> {
@@ -117,7 +101,7 @@ async function getCategoryStats(
   const totalStats: DownloadStats = { total: 0, monthly: 0, weekly: 0 };
 
   for (const packageName of packageNames) {
-    const stats = await getPackageStats(dbClient, packageName);
+    const stats = await getPackageStats(packageName);
     if (stats) {
       packageStats.push(stats);
       totalStats.total += stats.total;
@@ -132,97 +116,78 @@ async function getCategoryStats(
   };
 }
 
-async function getLifetimeDownloadsByCategory(
-  dbClient: PoolClient
-): Promise<LifetimeStats> {
+async function getLifetimeDownloadsByCategory(): Promise<LifetimeStats> {
   const clientNow = new Date();
-  const clientNowDateString = clientNow.toISOString().split("T")[0];
 
-  // Get the overall MAX(date) from the database
-  const overallMaxDateQuery = await dbClient.query(`
-    SELECT MAX(date) as overall_max_db_date FROM npm_count.daily_downloads;
-  `);
+  const overallMaxDateQuery = await db
+    .select({ overallMaxDbDate: max(dailyDownloads.date) })
+    .from(dailyDownloads);
 
   let effectiveLatestDate: Date;
-  let overallMaxDbDateStr: string | null = null;
-
   if (
-    overallMaxDateQuery.rows.length > 0 &&
-    overallMaxDateQuery.rows[0].overall_max_db_date
+    overallMaxDateQuery.length > 0 &&
+    overallMaxDateQuery[0].overallMaxDbDate
   ) {
-    overallMaxDbDateStr = overallMaxDateQuery.rows[0].overall_max_db_date;
-    const overallMaxDbDate = new Date(overallMaxDbDateStr);
+    const overallMaxDbDate = overallMaxDateQuery[0].overallMaxDbDate;
     effectiveLatestDate =
       overallMaxDbDate > clientNow ? clientNow : overallMaxDbDate;
   } else {
-    // No data in table, treat as very old.
     effectiveLatestDate = new Date("1970-01-01");
   }
-  const effectiveLatestDateString = effectiveLatestDate
-    .toISOString()
-    .split("T")[0];
 
   const daysSinceUpdate = Math.floor(
     (clientNow.getTime() - effectiveLatestDate.getTime()) / (1000 * 3600 * 24)
   );
   const isStale = daysSinceUpdate > 7;
 
-  let weekStartDateString: string;
-  let monthStartDateString: string;
+  let weekStartDate: Date, monthStartDate: Date;
 
   if (isStale) {
-    const weekStartDate = new Date(effectiveLatestDate);
+    weekStartDate = new Date(effectiveLatestDate);
     weekStartDate.setDate(effectiveLatestDate.getDate() - 7);
-    weekStartDateString = weekStartDate.toISOString().split("T")[0];
-
-    const monthStartDate = new Date(effectiveLatestDate);
-    monthStartDate.setDate(effectiveLatestDate.getDate() - 30); // Approx month
-    monthStartDateString = monthStartDate.toISOString().split("T")[0];
+    monthStartDate = new Date(effectiveLatestDate);
+    monthStartDate.setDate(effectiveLatestDate.getDate() - 30);
   } else {
-    const weekStartDate = new Date(clientNow);
+    weekStartDate = new Date(clientNow);
     weekStartDate.setDate(clientNow.getDate() - 7);
-    weekStartDateString = weekStartDate.toISOString().split("T")[0];
-
-    const monthStartDate = new Date(clientNow);
-    monthStartDate.setDate(clientNow.getDate() - 30); // Approx month
-    monthStartDateString = monthStartDate.toISOString().split("T")[0];
+    monthStartDate = new Date(clientNow);
+    monthStartDate.setDate(clientNow.getDate() - 30);
   }
 
-  const result = await dbClient.query(`
-    WITH total_stats AS (
-      SELECT COALESCE(SUM(download_count), 0) as total_lifetime_downloads
-      FROM npm_count.daily_downloads
-    ),
-    package_stats AS (
-      SELECT
-        p.package_name,
-        COALESCE(SUM(d.download_count), 0) as total_downloads,
-        COALESCE(SUM(CASE WHEN d.date >= '${monthStartDateString}'::date ${isStale ? `AND d.date <= '${effectiveLatestDateString}'::date` : ""} THEN d.download_count ELSE 0 END), 0) as monthly_downloads,
-        COALESCE(SUM(CASE WHEN d.date >= '${weekStartDateString}'::date ${isStale ? `AND d.date <= '${effectiveLatestDateString}'::date` : ""} THEN d.download_count ELSE 0 END), 0) as weekly_downloads
-      FROM npm_count.npm_package p
-      LEFT JOIN npm_count.daily_downloads d ON d.package_name = p.package_name
-      WHERE p.is_active = true
-      GROUP BY p.package_name
-    )
-    SELECT
-      ps.*,
-      t.total_lifetime_downloads
-    FROM package_stats ps
-    CROSS JOIN total_stats t;
-  `);
+  const periodEndClause = isStale
+    ? sql`and ${dailyDownloads.date} <= ${effectiveLatestDate}`
+    : sql``;
 
-  let totalLifetimeDownloads = 0;
+  const result = await db
+    .select({
+      packageName: npmPackage.packageName,
+      totalDownloads: sql<string>`COALESCE(SUM(${dailyDownloads.downloadCount}), '0')`,
+      monthlyDownloads: sql<string>`COALESCE(SUM(CASE WHEN ${dailyDownloads.date} >= ${monthStartDate} ${periodEndClause} THEN ${dailyDownloads.downloadCount} ELSE 0 END), '0')`,
+      weeklyDownloads: sql<string>`COALESCE(SUM(CASE WHEN ${dailyDownloads.date} >= ${weekStartDate} ${periodEndClause} THEN ${dailyDownloads.downloadCount} ELSE 0 END), '0')`,
+    })
+    .from(npmPackage)
+    .leftJoin(
+      dailyDownloads,
+      eq(npmPackage.packageName, dailyDownloads.packageName)
+    )
+    .where(eq(npmPackage.isActive, true))
+    .groupBy(npmPackage.packageName);
+
+  const totalLifetimeResult = await db
+    .select({
+      total: sql<string>`COALESCE(SUM(${dailyDownloads.downloadCount}), '0')`,
+    })
+    .from(dailyDownloads);
+  const totalLifetimeDownloads = parseInt(totalLifetimeResult[0].total);
+
   const allPackages = new Map<string, PackageStats>();
 
-  result.rows.forEach((row, index) => {
-    if (index === 0) {
-      totalLifetimeDownloads = parseInt(row.total_lifetime_downloads);
-    }
-    allPackages.set(row.package_name, {
-      name: row.package_name,
-      total: parseInt(row.total_downloads || "0"),
-      monthly: parseInt(row.monthly_downloads || "0"),
-      weekly: parseInt(row.weekly_downloads || "0"),
+  result.forEach((row) => {
+    allPackages.set(row.packageName, {
+      name: row.packageName,
+      total: parseInt(row.totalDownloads || "0"),
+      monthly: parseInt(row.monthlyDownloads || "0"),
+      weekly: parseInt(row.weeklyDownloads || "0"),
     });
   });
 
@@ -472,7 +437,6 @@ function generateTimestampComment(repoBaseName: string): string {
 }
 
 export async function generateReadmeNew(): Promise<string> {
-  const db = new Database();
   let readmeContent = "# Hyperweb\n";
   let repoName = "hyperweb-io/hyperweb-statistics";
   let repoBaseName = "hyperweb-statistics";
@@ -522,52 +486,46 @@ export async function generateReadmeNew(): Promise<string> {
   }
 
   try {
-    await db.withTransaction(async (dbClient: PoolClient) => {
-      // 1. Fetch lifetime statistics
-      const lifetimeStats = await getLifetimeDownloadsByCategory(dbClient);
-      totals.lifetime = lifetimeStats.total;
-      // Set the grand total for downloads (all-time)
-      totals.total.total = lifetimeStats.total;
+    // 1. Fetch lifetime statistics
+    const lifetimeStats = await getLifetimeDownloadsByCategory();
+    totals.lifetime = lifetimeStats.total;
+    // Set the grand total for downloads (all-time)
+    totals.total.total = lifetimeStats.total;
 
-      // 2. Fetch and process category-specific statistics
-      for (const [categoryKey, packageNames] of Object.entries(packages)) {
-        const stats = await getCategoryStats(
-          dbClient,
-          categoryKey,
-          packageNames
-        );
-        categoryStatsMap.set(categoryKey, stats);
+    // 2. Fetch and process category-specific statistics
+    for (const [categoryKey, packageNames] of Object.entries(packages)) {
+      const stats = await getCategoryStats(categoryKey, packageNames);
+      categoryStatsMap.set(categoryKey, stats);
 
-        // 3. Aggregate into totals.web2, totals.web3, totals.utils
-        if (categoryKey === "launchql") {
-          totals.web2.total += stats.total;
-          totals.web2.monthly += stats.monthly;
-          totals.web2.weekly += stats.weekly;
-        } else if (categoryKey === "utils") {
-          totals.utils.total += stats.total;
-          totals.utils.monthly += stats.monthly;
-          totals.utils.weekly += stats.weekly;
-        } else {
-          // All other explicit categories are considered web3
-          totals.web3.total += stats.total;
-          totals.web3.monthly += stats.monthly;
-          totals.web3.weekly += stats.weekly;
-        }
+      // 3. Aggregate into totals.web2, totals.web3, totals.utils
+      if (categoryKey === "launchql") {
+        totals.web2.total += stats.total;
+        totals.web2.monthly += stats.monthly;
+        totals.web2.weekly += stats.weekly;
+      } else if (categoryKey === "utils") {
+        totals.utils.total += stats.total;
+        totals.utils.monthly += stats.monthly;
+        totals.utils.weekly += stats.weekly;
+      } else {
+        // All other explicit categories are considered web3
+        totals.web3.total += stats.total;
+        totals.web3.monthly += stats.monthly;
+        totals.web3.weekly += stats.weekly;
       }
+    }
 
-      // 4. Add uncategorized packages to the utils category totals
-      for (const pkg of lifetimeStats.uncategorizedPackages) {
-        totals.utils.total += pkg.total;
-        totals.utils.monthly += pkg.monthly;
-        totals.utils.weekly += pkg.weekly;
-      }
+    // 4. Add uncategorized packages to the utils category totals
+    for (const pkg of lifetimeStats.uncategorizedPackages) {
+      totals.utils.total += pkg.total;
+      totals.utils.monthly += pkg.monthly;
+      totals.utils.weekly += pkg.weekly;
+    }
 
-      // 5. Calculate final overall monthly and weekly totals
-      totals.total.monthly =
-        totals.web2.monthly + totals.web3.monthly + totals.utils.monthly;
-      totals.total.weekly =
-        totals.web2.weekly + totals.web3.weekly + totals.utils.weekly;
-    });
+    // 5. Calculate final overall monthly and weekly totals
+    totals.total.monthly =
+      totals.web2.monthly + totals.web3.monthly + totals.utils.monthly;
+    totals.total.weekly =
+      totals.web2.weekly + totals.web3.weekly + totals.utils.weekly;
   } catch (error) {
     console.error("Failed to fetch data for README generation:", error);
     return "# Hyperweb\n\nError generating README content.";
