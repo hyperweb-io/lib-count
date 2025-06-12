@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { dailyDownloads, npmPackage } from "@stats-db/schema";
+import { getS3Database } from "@/lib/s3-db";
 import { packages as dataConfigPackages } from "@stats-db/tasks/npm/data-config";
 
 type HighLevelCategory = "web2" | "web3" | "utils";
@@ -8,10 +7,16 @@ type MonthlyDownloads = Record<string, Record<HighLevelCategory, number>>;
 
 export async function GET() {
   try {
+    const db = await getS3Database();
+
     // 1. Get all unique package names from the database
-    const allDbPackages = await db
-      .selectDistinct({ name: npmPackage.packageName })
-      .from(npmPackage);
+    const allDbPackages = db
+      .prepare(
+        `
+      SELECT DISTINCT package_name as name FROM npm_package
+    `
+      )
+      .all() as { name: string }[];
     const allDbPackageNames = new Set(allDbPackages.map((p) => p.name));
 
     // 2. Get all packages from data-config.ts
@@ -42,21 +47,47 @@ export async function GET() {
     });
 
     // 5. Fetch all daily download records
-    const allDownloads = await db
-      .select({
-        packageName: dailyDownloads.packageName,
-        downloads: dailyDownloads.downloadCount,
-        date: dailyDownloads.date,
-      })
-      .from(dailyDownloads);
+    const allDownloadsComplete = db
+      .prepare(
+        `
+      SELECT package_name as packageName, download_count as downloads, date
+      FROM daily_downloads
+    `
+      )
+      .all() as {
+      packageName: string;
+      downloads: number;
+      date: string | number;
+    }[];
 
     // 6. Aggregate downloads in TypeScript
     const monthlyDownloads: MonthlyDownloads = {};
 
-    for (const record of allDownloads) {
+    for (const record of allDownloadsComplete) {
       if (!record.date) continue;
 
-      const date = new Date(record.date);
+      // Handle both string and integer date formats
+      let date: Date;
+      if (typeof record.date === "number") {
+        // SQLite stores as Unix timestamp - could be seconds or milliseconds
+        // If the number is less than a reasonable timestamp in milliseconds (year 2000),
+        // assume it's in seconds and convert to milliseconds
+        const timestamp =
+          record.date < 946684800000 ? record.date * 1000 : record.date;
+        date = new Date(timestamp);
+      } else {
+        // String format
+        date = new Date(record.date);
+      }
+
+      // Validate the date
+      if (isNaN(date.getTime())) {
+        console.warn(
+          `Invalid date found: ${record.date} for package ${record.packageName}`
+        );
+        continue;
+      }
+
       const year = date.getUTCFullYear();
       const month = (date.getUTCMonth() + 1).toString().padStart(2, "0");
       const monthKey = `${year}-${month}`;
@@ -94,11 +125,14 @@ export async function GET() {
       });
     }
 
+    // Close the database connection
+    db.close();
+
     return NextResponse.json(chartData);
   } catch (error) {
-    console.error("Failed to fetch category stats:", error);
+    console.error("Failed to fetch category stats from S3 database:", error);
     return NextResponse.json(
-      { error: "Internal Server Error" },
+      { error: "Failed to fetch category stats" },
       { status: 500 }
     );
   }

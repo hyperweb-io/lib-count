@@ -184,30 +184,30 @@ export function NpmStatsChart({
     return totals;
   }, [queryData]);
 
-  if (isLoading) {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Loading...</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="h-[400px] flex items-center justify-center">
-            <div className="animate-pulse">Loading chart data...</div>
-          </div>
-        </CardContent>
-      </Card>
-    );
-  }
-
   if (error) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Error</CardTitle>
+      <Card className="relative">
+        {/* Error Overlay */}
+        <div className="absolute inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center rounded-lg">
+          <div className="flex flex-col items-center gap-2 text-red-500">
+            <div className="h-8 w-8 rounded-full bg-red-100 flex items-center justify-center">
+              <span className="text-red-600 font-bold">!</span>
+            </div>
+            <p className="text-sm">
+              Failed to load chart data: {(error as Error).message}
+            </p>
+          </div>
+        </div>
+
+        <CardHeader className="flex flex-col items-stretch space-y-0 border-b p-0 sm:flex-row">
+          <div className="flex flex-1 flex-col justify-center gap-1 px-6 py-5 sm:py-6">
+            <CardTitle>NPM Package Downloads</CardTitle>
+            <CardDescription>Error loading package data</CardDescription>
+          </div>
         </CardHeader>
-        <CardContent>
-          <div className="h-[400px] flex items-center justify-center text-red-500">
-            Failed to load chart data: {(error as Error).message}
+        <CardContent className="px-2 sm:p-6">
+          <div className="w-full" style={{ height }}>
+            {/* Empty chart area */}
           </div>
         </CardContent>
       </Card>
@@ -215,7 +215,19 @@ export function NpmStatsChart({
   }
 
   return (
-    <Card>
+    <Card className="relative">
+      {/* Loading Overlay */}
+      {isLoading && (
+        <div className="absolute inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center rounded-lg">
+          <div className="flex flex-col items-center gap-2">
+            <div className="animate-spin h-8 w-8 border-4 border-primary border-r-transparent rounded-full"></div>
+            <p className="text-sm text-muted-foreground">
+              Loading chart data...
+            </p>
+          </div>
+        </div>
+      )}
+
       <CardHeader className="flex flex-col items-stretch space-y-0 border-b p-0 sm:flex-row">
         <div className="flex flex-1 flex-col justify-center gap-1 px-6 py-5 sm:py-6">
           <CardTitle>NPM Package Downloads</CardTitle>

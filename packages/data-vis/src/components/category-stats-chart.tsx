@@ -66,16 +66,32 @@ export function CategoryStatsChart() {
     };
   }, [chartData]);
 
-  if (isLoading) {
-    return <div>Loading...</div>;
-  }
-
-  if (error) {
-    return <div>Error loading data</div>;
-  }
-
   return (
-    <Card>
+    <Card className="relative">
+      {/* Loading Overlay */}
+      {isLoading && (
+        <div className="absolute inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center rounded-lg">
+          <div className="flex flex-col items-center gap-2">
+            <div className="animate-spin h-8 w-8 border-4 border-primary border-r-transparent rounded-full"></div>
+            <p className="text-sm text-muted-foreground">
+              Loading chart data...
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Error Overlay */}
+      {error && (
+        <div className="absolute inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center rounded-lg">
+          <div className="flex flex-col items-center gap-2 text-red-500">
+            <div className="h-8 w-8 rounded-full bg-red-100 flex items-center justify-center">
+              <span className="text-red-600 font-bold">!</span>
+            </div>
+            <p className="text-sm">Failed to load chart data</p>
+          </div>
+        </div>
+      )}
+
       <CardHeader className="flex flex-col items-stretch space-y-0 border-b p-0 sm:flex-row">
         <div className="flex flex-1 flex-col justify-center gap-1 px-6 py-5 sm:py-6">
           <CardTitle>Category Download Trends</CardTitle>
