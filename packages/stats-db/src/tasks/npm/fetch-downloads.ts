@@ -1,18 +1,13 @@
-import { Database } from "@cosmology/db-client";
-import { PoolClient } from "pg";
+import { db } from "../../db";
 import { NPMApiClient } from "../../npm-client";
-import {
-  getPackagesWithoutDownloads,
-  getAllPackages,
-  insertDailyDownloads,
-  updateLastFetchedDate,
-  getTotalLifetimeDownloads,
-} from "./npm.queries";
 import { delay } from "../../utils";
+import { eq, sql, inArray } from "drizzle-orm";
+import { npmPackage, dailyDownloads } from "../../schema";
+import { randomUUID } from "crypto";
 
 const npmClient = new NPMApiClient();
 
-const CONCURRENT_TASKS = 200; // Number of concurrent downloads
+const CONCURRENT_TASKS = 50; // Number of concurrent downloads
 const RATE_LIMIT_DELAY = 50; // ms between requests
 const CHUNK_SIZE = 30; // days per chunk
 const PACKAGE_WHITELIST = new Set([]);
@@ -76,7 +71,6 @@ function formatDateRange(range: DateRange): string {
 }
 
 async function processPackageChunk(
-  dbClient: PoolClient,
   packageName: string,
   dateRange: DateRange,
   chunkIndex: number,
@@ -116,12 +110,18 @@ async function processPackageChunk(
 
     // Ensure all dates are normalized to UTC
     const normalizedDownloads = downloadData.downloads.map((d) => ({
+      id: randomUUID(),
+      packageName: packageName,
       date: normalizeDate(new Date(d.day)),
       downloadCount: d.downloads,
+      createdAt: new Date(),
     }));
 
     // Insert all daily downloads
-    await insertDailyDownloads(dbClient, packageName, normalizedDownloads);
+    await db
+      .insert(dailyDownloads)
+      .values(normalizedDownloads)
+      .onConflictDoNothing();
 
     const totalDownloads = normalizedDownloads.reduce(
       (sum, d) => sum + d.downloadCount,
@@ -145,156 +145,132 @@ async function processPackageChunk(
   }
 }
 
-async function processPackageDownloads(
-  db: Database,
-  packageName: string,
-  creationDate: Date,
+async function processPackageChunkWithRetries(
+  task: {
+    packageName: string;
+    dateRange: DateRange;
+    chunkIndex: number;
+    totalChunks: number;
+  },
   current: number,
   total: number
 ): Promise<void> {
   let lastError: Error | unknown;
-
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      // Start a new transaction for this package
-      await db.withTransaction(async (dbClient: PoolClient) => {
-        const today = new Date();
-        const dateChunks = getDateChunks(creationDate, today);
-        const totalDays =
-          Math.floor(
-            (today.getTime() - creationDate.getTime()) / (1000 * 60 * 60 * 24)
-          ) + 1;
-
-        if (attempt > 1) {
-          console.log(
-            `[${current}/${total}] 🔄 Retry attempt ${attempt}/${MAX_RETRIES} for ${packageName}`
-          );
-        }
-
+      if (attempt > 1) {
         console.log(
-          `\n[${current}/${total}] Starting ${packageName}:\n` +
-            `\tPeriod: ${creationDate.toISOString().split("T")[0]} to ${today.toISOString().split("T")[0]}\n` +
-            `\tTotal Days: ${totalDays}\n` +
-            `\tChunks: ${dateChunks.length}`
+          `[${current}/${total}] 🔄 Retry attempt ${attempt}/${MAX_RETRIES} for ${task.packageName} chunk ${task.chunkIndex}`
         );
-
-        for (let i = 0; i < dateChunks.length; i++) {
-          await delay(RATE_LIMIT_DELAY);
-          await processPackageChunk(
-            dbClient,
-            packageName,
-            dateChunks[i],
-            i + 1,
-            dateChunks.length,
-            current,
-            total
-          );
-        }
-
-        // Update the last_fetched_date after all chunks are processed
-        await updateLastFetchedDate(dbClient, packageName);
-
-        // Get and log total lifetime downloads
-        const lifetimeDownloads = await getTotalLifetimeDownloads(
-          dbClient,
-          packageName
-        );
-        console.log(
-          `[${current}/${total}] ✅ Completed all chunks for ${packageName}\n` +
-            `\tTotal Lifetime Downloads: ${lifetimeDownloads.toLocaleString()}\n`
-        );
-      });
-
-      // If we get here, processing was successful
+      }
+      await processPackageChunk(
+        task.packageName,
+        task.dateRange,
+        task.chunkIndex,
+        task.totalChunks,
+        current,
+        total
+      );
       return;
     } catch (error) {
       lastError = error;
-
       if (attempt < MAX_RETRIES) {
         const backoffDelay = INITIAL_RETRY_DELAY * Math.pow(2, attempt - 1);
         console.error(
-          `[${current}/${total}] ⚠️ Attempt ${attempt}/${MAX_RETRIES} failed for ${packageName}:`,
-          error instanceof Error ? error.message : error,
-          `\n\tRetrying in ${backoffDelay / 1000} seconds...`
+          `[${current}/${total}] ⚠️ Attempt ${attempt}/${MAX_RETRIES} for ${
+            task.packageName
+          } failed:\n\tError: ${
+            error instanceof Error ? error.message : error
+          }\n\tRetrying in ${backoffDelay / 1000}s...`
         );
         await delay(backoffDelay);
       }
     }
   }
 
-  // If we get here, all retries failed
   console.error(
-    `[${current}/${total}] ❌ All ${MAX_RETRIES} attempts failed for ${packageName}:`,
+    `[${current}/${total}] ❌ All ${MAX_RETRIES} attempts failed for ${task.packageName}:`,
     lastError instanceof Error ? lastError.message : lastError
   );
   throw lastError;
 }
 
-async function processBatch(
-  db: Database,
-  packages: Array<PackageInfo>,
-  startIndex: number,
-  total: number
-): Promise<void> {
-  const results = await Promise.allSettled(
-    packages.map((pkg, index) =>
-      (async () => {
-        await delay(index * RATE_LIMIT_DELAY); // Stagger the requests
-        return processPackageDownloads(
-          db,
-          pkg.packageName,
-          pkg.creationDate,
-          startIndex + index + 1,
-          total
-        );
-      })()
-    )
-  );
-
-  // Log any failures in the batch
-  const failures = results.filter(
-    (r): r is PromiseRejectedResult => r.status === "rejected"
-  );
-  if (failures.length > 0) {
-    console.error(`\n${failures.length} package(s) failed in this batch:`);
-    failures.forEach((failure) => {
-      console.error(`  - ${failure.reason}`);
-    });
-  }
-}
-
 async function run(shouldResetDb: boolean = false): Promise<void> {
-  const db = new Database();
   const scriptStartTime = Date.now();
 
   try {
-    // Get packages based on RESET mode - this can be outside transaction
-    let packages: PackageInfo[] = [];
+    // Get packages based on RESET mode or data quality
+    let packagesResult: PackageInfo[] = [];
 
-    await db.withTransaction(async (dbClient: PoolClient) => {
-      packages = shouldResetDb
-        ? await getAllPackages(dbClient)
-        : await getPackagesWithoutDownloads(dbClient);
-    });
+    if (shouldResetDb) {
+      // Reset mode: process all packages
+      packagesResult = await db.select().from(npmPackage);
+      console.log("Reset mode: Processing all packages");
+    } else {
+      // Smart mode: process packages that need updates
+      // 1. Packages with no download data at all
+      // 2. Packages with only zero downloads (likely bad data)
+      // 3. Packages missing recent data (older than 7 days)
 
-    // Convert to simpler package info format
-    packages = packages.map((pkg) => ({
-      packageName: pkg.packageName,
-      creationDate: pkg.creationDate,
-    }));
+      const sevenDaysAgo = new Date();
+      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 
-    // Filter by whitelist if enabled
-    if (USE_WHITELIST) {
-      const originalCount = packages.length;
-      packages = packages.filter((pkg) =>
-        PACKAGE_WHITELIST.has(pkg.packageName)
-      );
+      const packagesNeedingUpdate = await db
+        .select({
+          packageName: npmPackage.packageName,
+          creationDate: npmPackage.creationDate,
+        })
+        .from(npmPackage)
+        .leftJoin(
+          dailyDownloads,
+          eq(npmPackage.packageName, dailyDownloads.packageName)
+        )
+        .groupBy(npmPackage.packageName, npmPackage.creationDate)
+        .having(
+          sql`
+            -- No download data at all
+            COUNT(${dailyDownloads.packageName}) = 0 
+            OR 
+            -- Only zero downloads (bad data)
+            (COUNT(${dailyDownloads.packageName}) > 0 AND SUM(${dailyDownloads.downloadCount}) = 0)
+            OR
+            -- Missing recent data (no data in last 7 days)
+            MAX(${dailyDownloads.date}) < ${sevenDaysAgo.getTime()}
+          `
+        );
+
+      packagesResult = packagesNeedingUpdate;
       console.log(
-        `Filtered ${originalCount} packages to ${packages.length} whitelisted packages`
+        `Smart mode: Found ${packagesResult.length} packages needing updates`
       );
     }
 
-    const totalPackages = packages.length;
+    // Clear existing data for packages being re-processed
+    if (packagesResult.length > 0) {
+      const packageNamesToProcess = packagesResult.map((p) => p.packageName);
+      console.log(
+        `Clearing existing download data for ${packageNamesToProcess.length} packages...`
+      );
+
+      await db
+        .delete(dailyDownloads)
+        .where(inArray(dailyDownloads.packageName, packageNamesToProcess));
+
+      console.log(`Cleared data for ${packageNamesToProcess.length} packages`);
+    }
+
+    // Filter by whitelist if enabled
+    if (USE_WHITELIST) {
+      const originalCount = packagesResult.length;
+      packagesResult = packagesResult.filter((pkg) =>
+        PACKAGE_WHITELIST.has(pkg.packageName)
+      );
+      console.log(
+        `Filtered ${originalCount} packages to ${packagesResult.length} whitelisted packages`
+      );
+    }
+
+    const totalPackages = packagesResult.length;
     if (totalPackages === 0) {
       console.log("No packages to process!");
       return;
@@ -303,37 +279,70 @@ async function run(shouldResetDb: boolean = false): Promise<void> {
     console.log(
       `Found ${totalPackages} package${
         totalPackages === 1 ? "" : "s"
-      } to process with ${CONCURRENT_TASKS} concurrent tasks${
-        shouldResetDb ? " (RESET mode)" : ""
-      }${USE_WHITELIST ? " (WHITELIST mode)" : ""}`
+      } to process...`
+    );
+
+    // Create a flat list of all chunks for all packages
+    const allChunks = packagesResult.flatMap((pkg) => {
+      const today = new Date();
+      const dateChunks = getDateChunks(pkg.creationDate, today);
+      return dateChunks.map((chunk, index) => ({
+        packageName: pkg.packageName,
+        dateRange: chunk,
+        chunkIndex: index + 1,
+        totalChunks: dateChunks.length,
+      }));
+    });
+
+    const totalChunks = allChunks.length;
+    console.log(
+      `Generated ${totalChunks} total download chunks to process with ${CONCURRENT_TASKS} concurrent tasks.`
     );
 
     let successCount = 0;
     let failureCount = 0;
+    let processedChunks = 0;
 
-    // Process packages in batches
-    for (let i = 0; i < packages.length; i += CONCURRENT_TASKS) {
-      const batch = packages.slice(i, i + CONCURRENT_TASKS);
+    // Process all chunks in concurrent batches
+    for (let i = 0; i < totalChunks; i += CONCURRENT_TASKS) {
+      const batch = allChunks.slice(i, i + CONCURRENT_TASKS);
       console.log(
-        `\nProcessing batch ${Math.floor(i / CONCURRENT_TASKS) + 1}/${Math.ceil(
-          packages.length / CONCURRENT_TASKS
+        `\nProcessing chunk batch ${Math.floor(i / CONCURRENT_TASKS) + 1}/${Math.ceil(
+          totalChunks / CONCURRENT_TASKS
         )}...`
       );
 
-      try {
-        await processBatch(db, batch, i, totalPackages);
-        successCount += batch.length;
-      } catch (error) {
-        failureCount += batch.length;
-        console.error(`Batch processing error:`, error);
-      }
+      const results = await Promise.allSettled(
+        batch.map((task, index) =>
+          (async () => {
+            await delay(index * RATE_LIMIT_DELAY); // Stagger requests within batch
+            return processPackageChunkWithRetries(
+              task,
+              processedChunks + index + 1,
+              totalChunks
+            );
+          })()
+        )
+      );
+
+      results.forEach((result) => {
+        if (result.status === "fulfilled") {
+          successCount++;
+        } else {
+          failureCount++;
+          console.error(`Chunk processing failed:`, result.reason);
+        }
+      });
+      processedChunks += batch.length;
     }
+
+    // Note: No longer using lastFetchedDate - packages are selected based on data quality
 
     const duration = ((Date.now() - scriptStartTime) / 1000).toFixed(2);
     console.log(
       `\nProcessing completed in ${duration} seconds!\n` +
-        `Successful packages: ${successCount}\n` +
-        `Failed packages: ${failureCount}`
+        `Successful chunks: ${successCount}\n` +
+        `Failed chunks: ${failureCount}`
     );
   } catch (error) {
     const duration = ((Date.now() - scriptStartTime) / 1000).toFixed(2);

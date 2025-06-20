@@ -47,7 +47,7 @@ if (require.main === module) {
   const command = process.argv[2];
   if (!command) {
     console.error(
-      "Please provide a command: fetch:packages, fetch:downloads, fetch:downloads:reset, generate:report, generate:badges, or generate:readme"
+      "Please provide a command: fetch:packages, fetch:downloads, generate:report, generate:badges, or generate:readme"
     );
     process.exit(1);
   }
