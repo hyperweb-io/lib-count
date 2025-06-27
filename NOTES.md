@@ -28,3 +28,7 @@ yarn gh:analyze
 Currently you should delete output/badges
 
 THen copy output/badges/lib-count to output/badges
+
+<LOL> then duplicate output/badges to badges
+
+— we need to update ALL our readmes to clean it up
