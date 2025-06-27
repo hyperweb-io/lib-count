@@ -10,7 +10,7 @@ Get the Data in the DB:
 ./scripts/schema.sh
 yarn npm:fetch:packages
 yarn npm:fetch:downloads
-yarn gh:fetch
+GITHUB_TOKEN=<redacted> yarn gh:fetch
 ```
 
 After db is loaded, then (run in any order, they are independent)
