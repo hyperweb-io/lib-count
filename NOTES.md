@@ -24,3 +24,7 @@ yarn gh:report
 yarn gh:export
 yarn gh:analyze
 ```
+
+Currently you should delete output/badges
+
+THen copy output/badges/lib-count to output/badges
