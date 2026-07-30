@@ -2,7 +2,12 @@ import { Database } from "@cosmology/db-client";
 import { PoolClient } from "pg";
 import * as fs from "fs";
 import * as path from "path";
-import { packages, readmeHiddenCategories, readmeCategoryOrder } from "../../config";
+import {
+  packages,
+  readmeHiddenCategories,
+  readmeCategoryOrder,
+  readmeCategoryDisplayName,
+} from "../../config";
 import {
   DownloadStats,
   PackageStats,
@@ -376,7 +381,8 @@ function generateCategorySections(categoryStatsMap: Map<string, CategoryStats>):
     return categoryData && categoryHasVisiblePackages(categoryData);
   });
 
-  let content = generateToc(visibleCategoryKeys);
+  const anchors = buildAnchorMap(visibleCategoryKeys);
+  let content = generateToc(visibleCategoryKeys, anchors);
   for (const categoryName of visibleCategoryKeys) {
     const categoryData = categoryStatsMap.get(categoryName);
     if (categoryData) {
@@ -386,17 +392,60 @@ function generateCategorySections(categoryStatsMap: Map<string, CategoryStats>):
   return content;
 }
 
-function generateToc(packageCategories: string[]): string {
+// Anchors for the generated category sections.
+//
+// The static intro snippet already contains `### Constructive` and `### PGPM`
+// brand blurbs. When a category's display name matches one of those, GitHub sees
+// two identical headings and suffixes the second anchor ("#constructive-1"), so a
+// naive slug would link the Table of Contents at the brand blurb instead of the
+// package table. Mirror GitHub's rule rather than guessing.
+function slugifyHeading(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9-]/g, "");
+}
+
+function headingsInIntro(): string[] {
+  try {
+    const introPath = path.resolve(__dirname, "../readme-snippets/intro.md");
+    return fs
+      .readFileSync(introPath, "utf8")
+      .split("\n")
+      .filter((l) => l.startsWith("### "))
+      .map((l) => l.replace(/^###\s+/, "").trim());
+  } catch {
+    return [];
+  }
+}
+
+function buildAnchorMap(categoryKeys: string[]): Map<string, string> {
+  const seen = new Map<string, number>();
+  for (const heading of headingsInIntro()) {
+    const slug = slugifyHeading(heading);
+    seen.set(slug, (seen.get(slug) ?? 0) + 1);
+  }
+  const anchors = new Map<string, string>();
+  for (const key of categoryKeys) {
+    const slug = slugifyHeading(readmeCategoryDisplayName(key));
+    const priorCount = seen.get(slug) ?? 0;
+    anchors.set(key, priorCount === 0 ? slug : `${slug}-${priorCount}`);
+    seen.set(slug, priorCount + 1);
+  }
+  return anchors;
+}
+
+function generateToc(
+  packageCategories: string[],
+  anchors: Map<string, string>
+): string {
   const tocTitle = "## Table of Contents\n\n";
   const tocItems = packageCategories.map((categoryName) => {
-    // Convert categoryName to a suitable anchor link format
-    // Typically: lowercase and replace non-alphanumeric with hyphens
-    // For simple one-word or hyphenated names, toLowerCase is often enough.
-    const anchor = categoryName
-      .toLowerCase()
-      .replace(/\s+/g, "-")
-      .replace(/[^a-z0-9-]/g, "");
-    return `- [${categoryName}](#${anchor})`;
+    // Link text and anchor both come from the display name, so the anchor keeps
+    // matching the heading GitHub generates from it.
+    const displayName = readmeCategoryDisplayName(categoryName);
+    const anchor = anchors.get(categoryName) ?? slugifyHeading(displayName);
+    return `- [${displayName}](#${anchor})`;
   });
   return tocTitle + tocItems.join("\n") + "\n\n"; // Ensure a blank line after the ToC list
 }
@@ -406,12 +455,8 @@ function generateCategoryTableSection(
   categoryData: CategoryStats
 ): string {
   const lines: string[] = [];
-  // Ensure the generated anchor matches the ToC link logic
-  const anchor = categoryName
-    .toLowerCase()
-    .replace(/\s+/g, "-")
-    .replace(/[^a-z0-9-]/g, "");
-  lines.push(`### ${categoryName}
+  const displayName = readmeCategoryDisplayName(categoryName);
+  lines.push(`### ${displayName}
 `); // The heading itself does not need the anchor in its text
   lines.push("| Name | Total | Monthly | Weekly |");
   lines.push("| ------- | ------ | ------- | ----- |");

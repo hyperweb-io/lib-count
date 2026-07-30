@@ -11,6 +11,25 @@ export const readmeHiddenCategories: string[] = [
   "boilerplates",
 ];
 
+// README Display Names
+// The README headings and Table of Contents use the raw category key by default,
+// which leaks internal/legacy names into a public page. Map a key here to control
+// how it is displayed. The key itself is deliberately left alone: it is what the
+// database rows and the badge filenames are keyed on, so renaming it would break
+// existing badge URLs that other repos and old npm READMEs already point at.
+// Only map what needs correcting: changing a display name changes the section's
+// anchor, so remapping a category that nothing was wrong with would silently
+// break existing deep links to it.
+export const readmeCategoryDisplayNames: Record<string, string> = {
+  // The @launchql/*, skitch-* and @pgsql/* packages in here are all Constructive.
+  // "launchql" is the old brand name, kept as the key only for continuity.
+  launchql: "Constructive",
+};
+
+export function readmeCategoryDisplayName(categoryName: string): string {
+  return readmeCategoryDisplayNames[categoryName] ?? categoryName;
+}
+
 // README Display Order
 // Categories listed here appear first in this order
 // Any categories not listed will appear after in their natural order
