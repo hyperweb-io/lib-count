@@ -511,7 +511,7 @@ export async function generateReadmeNew(): Promise<string> {
         categoryStatsMap.set(categoryKey, stats);
 
         // 3. Aggregate into totals.cloud, totals.chain, totals.utils
-        if (categoryKey === "launchql") {
+        if (categoryKey === "launchql" || categoryKey === "pgpm" || categoryKey === "kubernetesjs") {
           totals.cloud.total += stats.total;
           totals.cloud.monthly += stats.monthly;
           totals.cloud.weekly += stats.weekly;
