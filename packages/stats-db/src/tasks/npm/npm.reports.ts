@@ -1,6 +1,6 @@
 import { Database } from "@cosmology/db-client";
 import { PoolClient } from "pg";
-import { packages } from "../../config";
+import { packages, brandRollupFor } from "../../config";
 import * as fs from "fs";
 import * as path from "path";
 import {
@@ -644,12 +644,10 @@ async function generateReport(): Promise<string> {
         categoryStats.set(category, stats);
 
         // Update totals based on category
-        const target =
-          category === "launchql"
-            ? totals.cloud
-            : category === "utils"
-              ? totals.utils
-              : totals.chain;
+        // Shared classifier (see config/categories.ts). Previously this counted
+        // only launchql as Cloud while the README also counted pgpm and
+        // kubernetesjs, so badges and table disagreed by ~7.3M.
+        const target = totals[brandRollupFor(category)];
 
         target.total += stats.total;
         target.monthly += stats.monthly;
@@ -794,12 +792,10 @@ async function generateAndWriteBadges(): Promise<void> {
         categoryStats.set(category, stats);
 
         // Update totals based on category
-        const target =
-          category === "launchql"
-            ? totals.cloud
-            : category === "utils"
-              ? totals.utils
-              : totals.chain;
+        // Shared classifier (see config/categories.ts). Previously this counted
+        // only launchql as Cloud while the README also counted pgpm and
+        // kubernetesjs, so badges and table disagreed by ~7.3M.
+        const target = totals[brandRollupFor(category)];
 
         target.total += stats.total;
         target.monthly += stats.monthly;

@@ -7,6 +7,7 @@ import {
   readmeHiddenCategories,
   readmeCategoryOrder,
   readmeCategoryDisplayName,
+  brandRollupFor,
 } from "../../config";
 import {
   DownloadStats,
@@ -555,21 +556,11 @@ export async function generateReadmeNew(): Promise<string> {
         );
         categoryStatsMap.set(categoryKey, stats);
 
-        // 3. Aggregate into totals.cloud, totals.chain, totals.utils
-        if (categoryKey === "launchql" || categoryKey === "pgpm" || categoryKey === "kubernetesjs") {
-          totals.cloud.total += stats.total;
-          totals.cloud.monthly += stats.monthly;
-          totals.cloud.weekly += stats.weekly;
-        } else if (categoryKey === "utils") {
-          totals.utils.total += stats.total;
-          totals.utils.monthly += stats.monthly;
-          totals.utils.weekly += stats.weekly;
-        } else {
-          // All other explicit categories are considered chain
-          totals.chain.total += stats.total;
-          totals.chain.monthly += stats.monthly;
-          totals.chain.weekly += stats.weekly;
-        }
+        // 3. Aggregate into the brand rollups (shared classifier — see config)
+        const target = totals[brandRollupFor(categoryKey)];
+        target.total += stats.total;
+        target.monthly += stats.monthly;
+        target.weekly += stats.weekly;
       }
 
       // 4. Add uncategorized packages to the utils category totals
