@@ -647,7 +647,9 @@ async function generateReport(): Promise<string> {
         // Shared classifier (see config/categories.ts). Previously this counted
         // only launchql as Cloud while the README also counted pgpm and
         // kubernetesjs, so badges and table disagreed by ~7.3M.
-        const target = totals[brandRollupFor(category)];
+        const rollup = brandRollupFor(category);
+        if (rollup === "personal") continue; // excluded from company totals
+        const target = totals[rollup];
 
         target.total += stats.total;
         target.monthly += stats.monthly;
@@ -795,7 +797,9 @@ async function generateAndWriteBadges(): Promise<void> {
         // Shared classifier (see config/categories.ts). Previously this counted
         // only launchql as Cloud while the README also counted pgpm and
         // kubernetesjs, so badges and table disagreed by ~7.3M.
-        const target = totals[brandRollupFor(category)];
+        const rollup = brandRollupFor(category);
+        if (rollup === "personal") continue; // excluded from company totals
+        const target = totals[rollup];
 
         target.total += stats.total;
         target.monthly += stats.monthly;

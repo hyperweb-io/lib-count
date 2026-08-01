@@ -46,7 +46,14 @@ export function readmeCategoryDisplayName(categoryName: string): string {
 // Constructive packages silently land in the Chain total.
 // ---------------------------------------------------------------------------
 
-export type BrandRollup = "cloud" | "chain" | "utils";
+export type BrandRollup = "cloud" | "chain" | "utils" | "personal";
+
+/**
+ * Dan's personal projects. Still tracked and still fetched, but excluded from
+ * every company total — they are not Constructive, Chain or shared tooling, and
+ * counting them overstates the company's numbers.
+ */
+export const personalCategories: string[] = ["math"];
 
 /** Cosmos / interchain / Hyperweb tooling. */
 export const chainCategories: string[] = [
@@ -79,9 +86,10 @@ export const chainCategories: string[] = [
  * `misc` is listed so genuinely uncategorized packages do not inflate Cloud —
  * that is the one reason Cloud is not a pure catch-all.
  */
-export const utilsCategories: string[] = ["utils", "math", "misc"];
+export const utilsCategories: string[] = ["utils", "misc"];
 
 export function brandRollupFor(categoryName: string): BrandRollup {
+  if (personalCategories.includes(categoryName)) return "personal";
   if (chainCategories.includes(categoryName)) return "chain";
   if (utilsCategories.includes(categoryName)) return "utils";
   return "cloud";
@@ -172,6 +180,14 @@ export const packages: Packages = {
 
   ],
   math: [
+    "@latex2js/html5",
+    "@latex2js/macros",
+    "@latex2js/pstricks",
+    "@latex2js/react",
+    "@latex2js/settings",
+    "@latex2js/utils",
+    "@latex2js/vue",
+    "@mathapedia/css",
     "latex2html5",
     "latex2js-macros",
     "latex2js-mathjax",
@@ -872,6 +888,62 @@ export const packages: Packages = {
 
   ],
   launchql: [
+    "@agentic-kit/chat",
+    "@agentic-kit/cli",
+    "@agentic-kit/harness",
+    "@agentic-kit/pi",
+    "bradie",
+    "@constructive-db/apps",
+    "@constructive-db/catalog",
+    "@constructive-db/compute",
+    "@constructive-db/compute-platform",
+    "@constructive-db/infra",
+    "@constructive-db/infra-platform",
+    "@constructive-db/platform-schema",
+    "@constructive-db/routing",
+    "@constructive-db/routing-functions",
+    "@constructive-db/routing-platform",
+    "@constructive-io/data",
+    "@constructive-io/errors",
+    "@constructive-io/eslint-config",
+    "@constructive-io/graphql-dev-server",
+    "@constructive-io/schema-builder",
+    "@pgpm/app-scope",
+    "@pgpm/cron",
+    "@pgpm/function-resolution",
+    "@pgpmjs/ast",
+    "@pgpmjs/bundle",
+    "@pgpmjs/diff",
+    "@pgpmjs/import",
+    "@pgpmjs/naming-spec",
+    "@pgpmjs/pglite-adapter",
+    "@pgpmjs/portability",
+    "@pgpmjs/slice",
+    "@pgpmjs/transform",
+    "@pgpmjs/traverse",
+    "@pgsql/scripts",
+    "@pgsql/transform-ast",
+    "graphile-meta",
+    "graphile-history",
+    "graphile-function-bindings",
+    "graphile-plugin-utils",
+    "pglite-test",
+    "query-spec",
+    "@decryption/legacy",
+    "@decryption/base",
+    "@decryption/bip32",
+    "@decryption/bip39",
+    "@decryption/ciphers",
+    "@decryption/cli",
+    "@decryption/core",
+    "@decryption/cosmology-compat",
+    "@decryption/curves",
+    "@decryption/hashes",
+    "@decryption/keys",
+    "@decryption/secrets",
+    "@decryption/shamir",
+    "@decryption/vault",
+    "@decryption/wallet",
     "safegres",
     "introspectron",
     "@webql/utils",
@@ -1137,6 +1209,14 @@ export const packages: Packages = {
 
   ],
   utils: [
+    "confstash",
+    "promql-ast",
+    "toml-ast",
+    "jsonldjs",
+    "@schema-typescript/cli",
+    "@genomic/utils",
+    "@genomic/scaffolds",
+    "backoff-script",
     "@yamlize/cli",
     "12factor-env",
     "airdb",

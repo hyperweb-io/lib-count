@@ -539,6 +539,8 @@ export async function generateReadmeNew(): Promise<string> {
     );
   }
 
+  const personalTotals = { total: 0, monthly: 0, weekly: 0 };
+
   try {
     await db.withTransaction(async (dbClient: PoolClient) => {
       // 1. Fetch lifetime statistics
@@ -557,7 +559,15 @@ export async function generateReadmeNew(): Promise<string> {
         categoryStatsMap.set(categoryKey, stats);
 
         // 3. Aggregate into the brand rollups (shared classifier — see config)
-        const target = totals[brandRollupFor(categoryKey)];
+        const rollup = brandRollupFor(categoryKey);
+        if (rollup === "personal") {
+          // Personal projects are tracked but excluded from every company total.
+          personalTotals.total += stats.total;
+          personalTotals.monthly += stats.monthly;
+          personalTotals.weekly += stats.weekly;
+          continue;
+        }
+        const target = totals[rollup];
         target.total += stats.total;
         target.monthly += stats.monthly;
         target.weekly += stats.weekly;
@@ -571,6 +581,16 @@ export async function generateReadmeNew(): Promise<string> {
       }
 
       // 5. Calculate final overall monthly and weekly totals
+      // The lifetime figure is DB-wide, so personal projects are still in it.
+      // Monthly/weekly are summed from the rollups and already exclude them.
+      totals.total.total = Math.max(0, totals.total.total - personalTotals.total);
+      if (personalTotals.total > 0) {
+        console.log(
+          `Excluded from company totals (personal): ${personalTotals.total.toLocaleString()} lifetime, ` +
+            `${personalTotals.monthly.toLocaleString()} monthly, ${personalTotals.weekly.toLocaleString()} weekly`
+        );
+      }
+
       totals.total.monthly =
         totals.cloud.monthly + totals.chain.monthly + totals.utils.monthly;
       totals.total.weekly =
